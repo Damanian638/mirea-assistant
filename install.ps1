@@ -40,6 +40,32 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Fail "uv не найден после установки. Откройте новое окно PowerShell и повторите." }
 }
+# Обновление: работающий помощник держит свои файлы, и uv не может их заменить («Access is denied»).
+function Stop-Assistant {
+    $port = 8765
+    $cfg = Join-Path $env:USERPROFILE ".mirea-assistant\config.json"
+    if (Test-Path -LiteralPath $cfg) {
+        try { $p = (Get-Content -Raw -Encoding UTF8 -LiteralPath $cfg | ConvertFrom-Json).port; if ($p) { $port = [int]$p } } catch {}
+    }
+    try {
+        Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/api/shutdown" -ContentType "application/json" -Body "{}" -TimeoutSec 3 | Out-Null
+        Write-Host "    выключаю запущенного помощника для обновления..."
+        Start-Sleep -Seconds 2
+    } catch {}
+    $dirs = @()
+    $tools = uv tool dir 2>$null
+    if ($LASTEXITCODE -eq 0 -and $tools) { $dirs += Join-Path ($tools | Select-Object -First 1).Trim() "mirea-assistant" }
+    $bins = uv tool dir --bin 2>$null
+    if ($LASTEXITCODE -eq 0 -and $bins) { $dirs += ($bins | Select-Object -First 1).Trim() }
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $_.Path
+        $path -and ($dirs | Where-Object { $path.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) -and
+            ($path -like "*mirea-assistant*" -or $path -like "*python*")
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+}
+Stop-Assistant
+
 Write-Host "    скачиваю и устанавливаю..."
 uv tool install --quiet --force --reinstall --python 3.12 $Src
 if ($LASTEXITCODE -ne 0) {

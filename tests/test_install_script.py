@@ -32,3 +32,11 @@ def test_windows_specifics():
     assert "Win32_ComputerSystem" in PS and "configure --ram-gb" in PS
     assert "Get-PSDrive" in PS  # проверка места до скачивания модели
     assert "/VERYSILENT" in PS and "winget install --id Ollama.Ollama" in PS
+
+
+def test_update_stops_running_assistant_first():
+    """Найдено прогоном на Windows: повторная установка падала с Access is denied, пока помощник запущен."""
+    stop = PS.index("Stop-Assistant\n\n")
+    install = PS.index("uv tool install --quiet")
+    assert stop < install
+    assert "/api/shutdown" in PS and "Stop-Process" in PS
