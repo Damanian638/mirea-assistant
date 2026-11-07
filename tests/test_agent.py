@@ -278,3 +278,33 @@ def test_pair_time_fixed(user, args, start, end):
 
     out = agent.fix_pair_time("free_rooms", args, dates.mentioned_pairs(user), user)
     assert (out["start_time"], out["end_time"]) == (start, end) and "pair" not in out
+
+
+@pytest.mark.parametrize(
+    "name, args, text, me, blocked",
+    [
+        # экзамен qwen3:8b: без ФИО в настройках модель подставила имя из примера
+        ("timetable", {"kind": "teacher", "name": agent.EXAMPLE_TEACHER, "date_from": "завтра"}, "Какие у меня пары завтра?", None, True),
+        ("find_reschedule_slots", {"teacher": "", "lesson_date": "9 ноября"}, "перенеси мои пары", None, True),
+        ("find_reschedule_slots", {"teacher": "<ФИО>"}, "перенеси мою пару", None, True),
+        ("timetable", {"kind": "teacher", "name": "Коняшкин Г.В."}, "пары Коняшкина", None, False),
+        ("timetable", {"kind": "group", "name": "ЭФБО-01-24"}, "мои студенты ЭФБО-01-24", None, False),
+        ("timetable", {"kind": "teacher", "name": agent.EXAMPLE_TEACHER}, "у меня пары?", "Коняшкин Г.В.", False),
+    ],
+)
+def test_needs_my_name(name, args, text, me, blocked):
+    assert agent.needs_my_name(name, args, me, text) is blocked
+
+
+async def test_unknown_me_makes_model_ask_instead_of_calling():
+    llm = FakeLLM(call("timetable", kind="teacher", name=agent.EXAMPLE_TEACHER, date_from="завтра"),
+                  Reply("Подскажите, пожалуйста, ваше ФИО?"))
+    ran = []
+
+    async def runner(name, args):
+        ran.append(name)
+        return "x"
+
+    res = await agent.answer(llm, [{"role": "user", "content": "Какие у меня пары завтра?"}], me=None, tool_runner=runner)
+    assert ran == [] and "ФИО" in res.text
+    assert "ФИО пользователя неизвестно" in llm.calls[1][0][-1]["content"]

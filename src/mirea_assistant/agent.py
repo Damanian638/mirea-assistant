@@ -294,6 +294,11 @@ async def run_tool(name: str, args: dict) -> str:
     raise S.ServiceError(f"Неизвестный инструмент {name}.")
 
 
+# Имя-пример в промпте, когда ФИО пользователя неизвестно. Экзамен: qwen3:8b подставила пример
+# («Иванов Иван Иванович») в ответ на «какие у меня пары» — такой вызов программа не выполняет.
+EXAMPLE_TEACHER = "Петров Пётр Петрович"
+_MY_WORDS = re.compile(r"\b(у меня|мне|меня|я|мо(й|я|ё|е|и|ю|ей|его|ему|ем|им|их|ими))\b", re.I)
+
 _ME_WORDS = {"я", "мне", "меня", "мой", "мои", "моё", "мое", "моих", "me", "user", "пользователь"}
 
 
@@ -303,6 +308,20 @@ def _means_me(value: Any) -> bool:
     Прогон на Windows: модель qwen3:0.6b передала teacher="<ФИО пользователя>" дословно из примера."""
     v = (_str(value) or "").casefold()
     return not v or v in _ME_WORDS or "<" in v or "фио" in v or "пользовател" in v
+
+
+def needs_my_name(name: str, args: dict, me: str | None, user_text: str) -> bool:
+    """Вопрос про «мои пары», а ФИО пользователя неизвестно — сначала спросить его."""
+    if me or name not in ("timetable", "find_reschedule_slots"):
+        return False
+    if name == "timetable" and _KINDS.get((_str(args.get("kind")) or "teacher").casefold()) != "teacher":
+        return False
+    who = args.get("teacher" if name == "find_reschedule_slots" else "name")
+    example = S._norm(EXAMPLE_TEACHER)
+    v = (_str(who) or "").casefold()
+    if v and (S._norm(v).startswith(example[:6]) or "<" in v or "фио" in v):
+        return True  # имя из примера или заготовка — настоящим ФИО быть не может
+    return _means_me(who) and bool(_MY_WORDS.search(user_text or ""))
 
 
 def with_me(name: str, args: dict, me: str | None) -> dict:
@@ -389,8 +408,9 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
     now = now or clock()
     bells = "; ".join(f"{n}-я {a}–{b}" for n, (a, b) in slots.BELLS.items())
     who = (f"Пользователь — преподаватель {me}. «Мои пары», «у меня» — это расписание преподавателя {me}."
-           if me else "Если пользователь спрашивает про «мои пары», а ФИО неизвестно — спроси ФИО.")
-    t = me or "Иванов Иван Иванович"
+           if me else "ФИО пользователя неизвестно. Если он спрашивает про «мои пары» или «у меня» — сначала спроси ФИО, "
+           f"не подставляй имя из примеров ниже ({EXAMPLE_TEACHER} — только пример).")
+    t = me or EXAMPLE_TEACHER
     return f"""Ты — помощник преподавателя РТУ МИРЭА. Отвечай по-русски, коротко и по делу, списком, если вариантов несколько.
 
 Правила:
@@ -465,6 +485,12 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
         for call in reply.tool_calls:
             call.arguments = effective_args(call.name, call.arguments, me, user_dates, user_pairs, clean[-1]["content"])
             key = call.name + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
+            if needs_my_name(call.name, call.arguments, me, clean[-1]["content"]):
+                result = ("ОШИБКА: ФИО пользователя неизвестно. Не вызывай инструмент: спроси, как зовут пользователя "
+                          "(или предложи вписать ФИО в ⚙ Настройки).")
+                steps.append(Step(call.name, call.arguments, False, result))
+                messages.append({"role": "tool", "tool_name": call.name, "content": result})
+                continue
             if key in seen:  # маленькие модели иногда зацикливаются на одном вызове
                 result, ok = "Этот запрос уже выполнен, результат выше. Ответь пользователю.", True
             else:

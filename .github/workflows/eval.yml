@@ -56,6 +56,9 @@ jobs:
           curl -fsSL https://ollama.com/install.sh | sh
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; (ollama serve >/tmp/ollama.log 2>&1 &); sleep 2; done
           ollama pull "${{ matrix.model }}"
+          echo "--- ollama show ${{ matrix.model }}"; ollama show "${{ matrix.model }}" | head -30
+          echo "--- проба: один короткий ответ без рассуждений"
+          time curl -s http://127.0.0.1:11434/api/chat -d '{"model":"${{ matrix.model }}","stream":false,"think":false,"options":{"num_predict":64},"messages":[{"role":"user","content":"Скажи привет одним словом"}]}' | head -c 600; echo
       - name: Экзамен
         env:
           PYTHONUTF8: '1'

@@ -110,7 +110,15 @@ def mentioned(text: str, today: date | datetime) -> list[str]:
             found.append(resolve(("следующий " if nxt else "") + w, today) or "")
         elif w.isdigit() and i + 1 < len(words) and _month(words[i + 1]):
             found.append(resolve(f"{w} {words[i + 1]}", today) or "")
-    return [d for d in dict.fromkeys(found) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+    found = [d for d in dict.fromkeys(found) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+    if not found:
+        # «на следующей неделе» → её понедельник; «на этой неделе» → сегодня.
+        # Экзамен qwen3:8b: «на следующую неделю» в субботу 7.11 → модель брала 16.11 вместо 9.11.
+        if re.search(r"следующ\w*\s+недел", low):
+            found.append((today + timedelta(days=7 - today.weekday())).isoformat())
+        elif re.search(r"(эт\w+|текущ\w+)\s+недел", low):
+            found.append(today.isoformat())
+    return found
 
 
 _PAIR_WORDS = {"перв": 1, "втор": 2, "трет": 3, "четвер": 4, "пят": 5, "шест": 6, "седьм": 7}
