@@ -137,18 +137,23 @@ if ($LASTEXITCODE -ne 0) { Fail "Не удалось скачать модель
 
 # --- 5. Ярлык и запуск ---
 Step "Ярлык на рабочем столе и запуск"
-try {
-    $Shell = New-Object -ComObject WScript.Shell
-    foreach ($Dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
+$Made = 0
+$Shell = New-Object -ComObject WScript.Shell
+foreach ($Dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs"))) {
+    if (-not $Dir) { continue }
+    try {
+        if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Path $Dir -Force | Out-Null }
         $Lnk = $Shell.CreateShortcut((Join-Path $Dir "Помощник МИРЭА.lnk"))
         $Lnk.TargetPath = $App
         $Lnk.WorkingDirectory = $env:USERPROFILE
         $Lnk.Description = "Помощник преподавателя РТУ МИРЭА"
         $Lnk.Save()
+        $Made++
+    } catch {
+        Write-Host "    ярлык в «$Dir» не создан: $($_.Exception.Message)" -ForegroundColor Yellow
     }
-} catch {
-    Write-Host "    ярлык создать не удалось; запускайте командой: $Bin" -ForegroundColor Yellow
 }
+if ($Made -eq 0) { Write-Host "    запускайте помощника командой: $App" -ForegroundColor Yellow } else { Write-Host "    готово" }
 [Console]::OutputEncoding = $PrevOutputEncoding
 Start-Process -FilePath $App
 Write-Host ""
