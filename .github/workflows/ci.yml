@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest -q
+
+  # Настоящая установка на Windows: install.ps1 из этого коммита, Ollama, маленькая модель, ярлык, вопрос помощнику.
+  windows-install:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      MIREA_ASSISTANT_SRC: ${{ github.workspace }}
+      MIREA_ASSISTANT_MODEL: qwen3:0.6b
+    steps:
+      - uses: actions/checkout@v4
+      - name: Установка (как у преподавателя)
+        shell: powershell
+        run: Get-Content -Raw -Encoding UTF8 .\install.ps1 | Invoke-Expression
+      - name: Повторная установка (обновление)
+        shell: powershell
+        run: Get-Content -Raw -Encoding UTF8 .\install.ps1 | Invoke-Expression
+      - name: Проверка результата
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "Помощник МИРЭА.lnk"
+          if (-not (Test-Path -LiteralPath $lnk)) { throw "нет ярлыка $lnk" }
+          $bin = Join-Path ((uv tool dir --bin) | Select-Object -First 1).Trim() "mirea-assistant.exe"
+          & $bin status
+          if ($LASTEXITCODE -ne 0) { throw "status: модель не готова" }
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try { $s = Invoke-RestMethod http://127.0.0.1:8765/api/status; $ok = $true; break } catch { Start-Sleep 1 }
+          }
+          if (-not $ok) { throw "помощник не запустился после установки" }
+          $s | ConvertTo-Json
+          $body = @{ messages = @(@{ role = "user"; content = "Какие аудитории свободны в понедельник на 2-й паре в В-78?" }) } | ConvertTo-Json -Depth 5
+          $r = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/api/chat -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600
+          Write-Host "ОТВЕТ: $($r.answer)"
+          Write-Host "ИНСТРУМЕНТЫ: $(($r.steps | ForEach-Object { $_.tool + '=' + $_.ok }) -join ', ')"
+          if (-not $r.answer) { throw "пустой ответ" }
+      - name: Журнал помощника
+        if: always()
+        shell: powershell
+        run: Get-Content "$env:USERPROFILE\.mirea-assistant\assistant.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
