@@ -86,12 +86,15 @@ uv tool uninstall mirea-assistant
 src/mirea_assistant/
   slots.py    Поиск окон для переноса: пересечение расписаний по звонкам + свободные аудитории
   agent.py    Инструменты для модели, нормализация аргументов, календарь в промпте, цикл вызовов
+  dates.py    Даты словами («в понедельник», «9 ноября») → ГГГГ-ММ-ДД; исправление даты модели по словам пользователя
   llm.py      Клиент Ollama (/api/chat, think=false)
   web.py      Сервер на 127.0.0.1: страница чата и API; проверка Host, Origin и JSON
   chat.html   Страница чата (без внешних ресурсов)
   cli.py      Запуск, повторный запуск, configure/model/status
   config.py   Модель и порт: ~/.mirea-assistant/config.json
 ```
+
+CI на каждый коммит: тесты на Python 3.11–3.13 и **настоящая установка на Windows** (`install.ps1` дважды — установка и обновление, Ollama, модель qwen3:0.6b, ярлык, вопрос помощнику).
 
 ```bash
 uv venv --python 3.12
