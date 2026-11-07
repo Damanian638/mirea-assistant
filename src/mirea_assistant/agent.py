@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from mirea_connect import services as S
 
-from . import slots
+from . import dates, slots
 from .llm import LLMError, Ollama
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ TOOLS = [
                 "properties": {
                     "kind": {"type": "string", "enum": ["teacher", "group", "classroom"]},
                     "name": {"type": "string", "description": "ФИО или «Фамилия И. О.», группа «ЭФБО-01-24», аудитория «А-9 (В-78)»"},
-                    "date_from": {"type": "string", "description": "Первая дата ГГГГ-ММ-ДД из календаря"},
+                    "date_from": {"type": "string", "description": "Первая дата: ГГГГ-ММ-ДД или слово, как сказал пользователь («завтра», «понедельник», «9 ноября»)"},
                     "days": {"type": "integer", "description": "Сколько дней показать, 1–14"},
                 },
                 "required": ["kind", "name", "date_from"],
@@ -55,7 +55,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "date": {"type": "string", "description": "ГГГГ-ММ-ДД"},
+                    "date": {"type": "string", "description": "ГГГГ-ММ-ДД или слово, как сказал пользователь («завтра», «понедельник»)"},
                     "start_time": {"type": "string", "description": "ЧЧ:ММ, начало пары по звонкам"},
                     "end_time": {"type": "string", "description": "ЧЧ:ММ, конец пары"},
                     "campus": {"type": "string", "description": "Корпус: В-78, В-86, С-20, МП-1, СГ-22"},
@@ -78,8 +78,8 @@ TOOLS = [
                 "properties": {
                     "teacher": {"type": "string", "description": "Преподаватель"},
                     "groups": {"type": "array", "items": {"type": "string"}, "description": "Группы, у которых пара"},
-                    "date_from": {"type": "string", "description": "ГГГГ-ММ-ДД"},
-                    "date_to": {"type": "string", "description": "ГГГГ-ММ-ДД, не дальше 21 дня от date_from"},
+                    "date_from": {"type": "string", "description": "ГГГГ-ММ-ДД или слово («следующий понедельник»)"},
+                    "date_to": {"type": "string", "description": "ГГГГ-ММ-ДД или слово («следующая суббота»), не дальше 21 дня от date_from"},
                     "campus": {"type": "string", "description": "Корпус, где нужна аудитория"},
                     "pairs": {"type": "array", "items": {"type": "integer"}, "description": "Подходящие номера пар 1–7"},
                     "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "Дни недели 1=пн … 6=сб"},
@@ -157,7 +157,8 @@ def _fmt_day(iso: str) -> str:
 
 def format_timetable(data: dict) -> str:
     events = data["events"]
-    head = f"Расписание: {data['name']} ({data['kind']}), с {data.get('from')} на {data.get('days')} дн."
+    start = f"{data['from']} ({_fmt_day(data['from'])})" if data.get("from") else "всё доступное"
+    head = f"Расписание: {data['name']} ({data['kind']}), с {start} на {data.get('days')} дн."
     if not events:
         return head + "\nЗанятий нет."
     lines = [head]
@@ -172,7 +173,7 @@ def format_timetable(data: dict) -> str:
 
 
 def format_free_rooms(data: dict) -> str:
-    head = f"{data['date']} {data['from']}–{data['to']}"
+    head = f"{data['date']} ({_fmt_day(data['date'])}) {data['from']}–{data['to']}"
     if "rooms" in data:
         return head + "\n" + "\n".join(f"{r['room']}: {'свободна' if r['free'] else 'занята'}" for r in data["rooms"])
     rooms = [f"{r['room']}" + (f" ({r['campus']})" if r.get("campus") and not data.get("campus") else "") for r in data["free_rooms"]]
@@ -210,14 +211,18 @@ def format_search(items: list[dict]) -> str:
 # --- исполнение инструментов ---
 
 
+def _date(v: Any) -> str | None:
+    return dates.resolve(v, datetime.now(slots.MSK))
+
+
 async def run_tool(name: str, args: dict) -> str:
     if name == "timetable":
         days = int(args.get("days") or 7)
         data = await S.timetable(_kind(args.get("kind")), _str(args.get("name")) or "", max(1, min(days, 14)),
-                                 _str(args.get("date_from")))
+                                 _date(args.get("date_from")))
         return format_timetable(data)
     if name == "free_rooms":
-        data = await S.free_rooms(_list(args.get("rooms")) or None, _str(args.get("date")),
+        data = await S.free_rooms(_list(args.get("rooms")) or None, _date(args.get("date")),
                                   _str(args.get("start_time")) or "", _str(args.get("end_time")) or "",
                                   _str(args.get("campus")))
         return format_free_rooms(data)
@@ -225,8 +230,8 @@ async def run_tool(name: str, args: dict) -> str:
         data = await slots.find_slots(
             _str(args.get("teacher")) or "",
             _list(args.get("groups")),
-            _str(args.get("date_from")),
-            _str(args.get("date_to")),
+            _date(args.get("date_from")),
+            _date(args.get("date_to")),
             _str(args.get("campus")),
             _ints(args.get("pairs")),
             _ints(args.get("weekdays"), _WEEKDAYS),
@@ -259,7 +264,7 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
 
 Правила:
 - Расписание, аудитории и даты бери ТОЛЬКО из инструментов. Ничего не придумывай.
-- Даты передавай в формате ГГГГ-ММ-ДД, бери их из календаря ниже.
+- Даты передавай как сказал пользователь («завтра», «понедельник», «9 ноября») или ГГГГ-ММ-ДД из календаря ниже. В ответе называй дату и день недели из результата инструмента.
 - Если инструмент вернул ОШИБКУ со списком вариантов — покажи варианты и спроси, кого/что имели в виду.
 - Если не хватает данных (кто, какая группа, когда) — задай один уточняющий вопрос.
 - Для переноса пары и поиска времени для отработки используй find_reschedule_slots. Напомни, что перенос согласуется с учебным отделом.

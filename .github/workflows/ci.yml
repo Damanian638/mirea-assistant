@@ -51,8 +51,16 @@ jobs:
           $shell = New-Object -ComObject WScript.Shell
           Write-Host "Рабочий стол: $desk"
           $lnks = @(Get-ChildItem -LiteralPath $desk -Filter *.lnk -ErrorAction SilentlyContinue)
-          foreach ($l in $lnks) { Write-Host ("  {0} -> {1}" -f $l.Name, $shell.CreateShortcut($l.FullName).TargetPath) }
-          if (-not ($lnks | Where-Object { $_.Name -eq "Помощник МИРЭА.lnk" })) { $problems += "нет ярлыка «Помощник МИРЭА» на рабочем столе" }
+          $mine = $lnks | Where-Object { $_.Name -eq "Помощник МИРЭА.lnk" }
+          if (-not $mine) { $problems += "нет ярлыка «Помощник МИРЭА» на рабочем столе" }
+          else {
+            # COM не открывает путь с кириллицей на английской Windows — читаем копию с латинским именем
+            $copy = Join-Path $env:TEMP "check.lnk"
+            Copy-Item -LiteralPath $mine.FullName -Destination $copy -Force
+            $target = $shell.CreateShortcut($copy).TargetPath
+            Write-Host "Ярлык «$($mine.Name)» -> $target"
+            if ($target -notlike "*mirea-assistant*" -or -not (Test-Path -LiteralPath $target)) { $problems += "ярлык ведёт не туда: '$target'" }
+          }
 
           $bin = Join-Path ((uv tool dir --bin) | Select-Object -First 1).Trim() "mirea-assistant.exe"
           & $bin status
@@ -75,4 +83,4 @@ jobs:
       - name: Журнал помощника
         if: always()
         shell: powershell
-        run: Get-Content "$env:USERPROFILE\.mirea-assistant\assistant.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
+        run: Get-Content -Encoding UTF8 "$env:USERPROFILE\.mirea-assistant\assistant.log" -ErrorAction SilentlyContinue | Select-Object -Last 50
