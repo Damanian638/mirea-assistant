@@ -1,0 +1,72 @@
+name: Экзамен модели
+
+# Проверяет, понимает ли настоящая модель вопросы преподавателей (evals/cases.json).
+# Запуск: вкладка Actions → «Экзамен модели» → Run workflow. Отчёт — на странице прогона.
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Модели через запятую
+        default: qwen3:4b,qwen3:8b
+      think:
+        description: Режим «Думать тщательнее»
+        type: boolean
+        default: false
+      only:
+        description: Только эти вопросы (id через запятую), пусто — все
+        default: ''
+  schedule:
+    - cron: '17 2 * * 1'  # по понедельникам ночью: не сломалось ли понимание после изменений
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      models: ${{ steps.m.outputs.models }}
+    steps:
+      - id: m
+        shell: python
+        env:
+          MODELS: ${{ inputs.models || 'qwen3:4b,qwen3:8b' }}
+        run: |
+          import json, os
+          models = [m.strip() for m in os.environ["MODELS"].split(",") if m.strip()]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"models={json.dumps(models)}\n")
+
+  exam:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(needs.prepare.outputs.models) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e .
+      - name: Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; (ollama serve >/tmp/ollama.log 2>&1 &); sleep 2; done
+          ollama pull "${{ matrix.model }}"
+      - name: Экзамен
+        env:
+          PYTHONUTF8: '1'
+        run: >-
+          python -m mirea_assistant.evaluate evals/cases.json
+          --model "${{ matrix.model }}"
+          ${{ inputs.think && '--think' || '' }}
+          ${{ inputs.only && format('--only {0}', inputs.only) || '' }}
+          --report report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-${{ strategy.job-index }}
+          path: report.md

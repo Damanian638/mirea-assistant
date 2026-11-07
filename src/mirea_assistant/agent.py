@@ -228,8 +228,37 @@ def format_search(items: list[dict]) -> str:
 # --- исполнение инструментов ---
 
 
+def clock() -> datetime:
+    """Текущее время по Москве; экзамен модели подменяет его, чтобы «понедельник» был всегда одним днём."""
+    return datetime.now(slots.MSK)
+
+
 def _date(v: Any) -> str | None:
-    return dates.resolve(v, datetime.now(slots.MSK))
+    return dates.resolve(v, clock())
+
+
+# Корпус словами → код из расписания. Поиск аудиторий понимает только коды: «Вернадского 78» дал бы 0 свободных.
+_CAMPUSES = [
+    (("вернадского 78", "вернадского, 78", "вернадского, д.78", "в78", "в 78"), "В-78"),
+    (("вернадского 86", "вернадского, 86", "вернадского, д.86", "в86", "в 86"), "В-86"),
+    (("стромынк", "с20", "с 20"), "С-20"),
+    (("пироговск", "мп1", "мп 1"), "МП-1"),
+    (("соколин", "сг22", "сг 22"), "СГ-22"),
+]
+
+
+def _campus(v: Any) -> str | None:
+    raw = _str(v)
+    if not raw:
+        return None
+    low = S._norm_letters(raw).replace("-", "").replace("пр.", "").replace("проспект", "").strip()
+    compact = low.replace(" ", "")
+    for keys, code in _CAMPUSES:
+        if any(k.replace(" ", "") in compact for k in keys):
+            return code
+    if low in ("любой", "все", "any", "всё"):
+        return None
+    return raw
 
 
 async def run_tool(name: str, args: dict) -> str:
@@ -243,7 +272,7 @@ async def run_tool(name: str, args: dict) -> str:
     if name == "free_rooms":
         data = await S.free_rooms(_list(args.get("rooms")) or None, _date(args.get("date")),
                                   _str(args.get("start_time")) or "", _str(args.get("end_time")) or "",
-                                  _str(args.get("campus")))
+                                  _campus(args.get("campus")))
         return format_free_rooms(data)
     if name == "find_reschedule_slots":
         data = await slots.find_slots(
@@ -253,7 +282,7 @@ async def run_tool(name: str, args: dict) -> str:
             groups=_list(args.get("groups")),
             date_from=_date(args.get("date_from")),
             date_to=_date(args.get("date_to")),
-            campus=_str(args.get("campus")),
+            campus=_campus(args.get("campus")),
             allowed_pairs=_ints(args.get("allowed_pairs") or args.get("pairs")),
             weekdays=_ints(args.get("weekdays"), _WEEKDAYS),
         )
@@ -302,6 +331,14 @@ def fix_dates(name: str, args: dict, user_dates: list[str]) -> dict:
     return fixed
 
 
+def effective_args(name: str, args: dict, me: str | None, user_dates: list[str]) -> dict:
+    """Аргументы, с которыми программа реально вызовет инструмент (после подстановки ФИО и исправления даты)."""
+    out = fix_dates(name, with_me(name, args, me), user_dates)
+    if _str(out.get("campus")):
+        out = {**out, "campus": _campus(out["campus"])}
+    return out
+
+
 # --- системный промпт ---
 
 
@@ -316,7 +353,7 @@ def calendar_lines(today: datetime, days: int = 21) -> list[str]:
 
 
 def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
-    now = now or datetime.now(slots.MSK)
+    now = now or clock()
     bells = "; ".join(f"{n}-я {a}–{b}" for n, (a, b) in slots.BELLS.items())
     who = (f"Пользователь — преподаватель {me}. «Мои пары», «у меня» — это расписание преподавателя {me}."
            if me else "Если пользователь спрашивает про «мои пары», а ФИО неизвестно — спроси ФИО.")
@@ -381,7 +418,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
     messages = [{"role": "system", "content": system_prompt(me)}, *clean]
     steps: list[Step] = []
     seen: set[str] = set()
-    user_dates = dates.mentioned(clean[-1]["content"], datetime.now(slots.MSK))
+    user_dates = dates.mentioned(clean[-1]["content"], clock())
 
     for _ in range(MAX_ROUNDS):
         reply = await llm.chat(messages, TOOLS, think=think)
@@ -390,7 +427,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
         messages.append({"role": "assistant", "content": reply.content,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in reply.tool_calls]})
         for call in reply.tool_calls:
-            call.arguments = fix_dates(call.name, with_me(call.name, call.arguments, me), user_dates)
+            call.arguments = effective_args(call.name, call.arguments, me, user_dates)
             key = call.name + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
             if key in seen:  # маленькие модели иногда зацикливаются на одном вызове
                 result, ok = "Этот запрос уже выполнен, результат выше. Ответь пользователю.", True
