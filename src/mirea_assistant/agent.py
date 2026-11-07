@@ -242,6 +242,23 @@ async def run_tool(name: str, args: dict) -> str:
     raise S.ServiceError(f"Неизвестный инструмент {name}.")
 
 
+def fix_dates(name: str, args: dict, user_dates: list[str]) -> dict:
+    """Если пользователь назвал ровно один день, а модель передала другой — верна дата пользователя."""
+    if len(user_dates) != 1:
+        return args
+    wanted = user_dates[0]
+    key = {"timetable": "date_from", "free_rooms": "date"}.get(name)
+    if not key:
+        return args
+    given = _date(args.get(key))
+    if given == wanted:
+        return args
+    fixed = dict(args)
+    fixed[key] = wanted
+    logger.info("date corrected for %s: %s -> %s", name, args.get(key), wanted)
+    return fixed
+
+
 # --- системный промпт ---
 
 
@@ -310,6 +327,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
     messages = [{"role": "system", "content": system_prompt(me)}, *clean]
     steps: list[Step] = []
     seen: set[str] = set()
+    user_dates = dates.mentioned(clean[-1]["content"], datetime.now(slots.MSK))
 
     for _ in range(MAX_ROUNDS):
         reply = await llm.chat(messages, TOOLS)
@@ -318,6 +336,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
         messages.append({"role": "assistant", "content": reply.content,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in reply.tool_calls]})
         for call in reply.tool_calls:
+            call.arguments = fix_dates(call.name, call.arguments, user_dates)
             key = call.name + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
             if key in seen:  # маленькие модели иногда зацикливаются на одном вызове
                 result, ok = "Этот запрос уже выполнен, результат выше. Ответь пользователю.", True

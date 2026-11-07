@@ -64,3 +64,30 @@ async def test_tool_receives_resolved_date(monkeypatch):
     text = await agent.run_tool("free_rooms", {"date": "в понедельник", "start_time": "10:40", "end_time": "12:10", "campus": "В-78"})
     assert seen["date"] == "2026-11-09"
     assert text.startswith("2026-11-09 (09.11 Пн) 10:40–12:10")  # модель видит день недели в результате
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Какие аудитории свободны в понедельник на 2-й паре в В-78?", ["2026-11-09"]),
+        ("пары группы на завтра", ["2026-11-08"]),
+        ("что 9 ноября у ЭФБО-01-24", ["2026-11-09"]),
+        ("расписание на 09.11", ["2026-11-09"]),
+        ("в среду на следующей неделе", ["2026-11-11"]),
+        ("с понедельника по среду", ["2026-11-09", "2026-11-11"]),  # два дня — диапазон, дату модели не правим
+        ("найди среди свободных аудиторий", []),  # «среди» — не среда
+        ("куда перенести пару на следующей неделе", []),
+    ],
+)
+def test_mentioned(text, expected):
+    assert dates.mentioned(text, TODAY) == expected
+
+
+def test_model_date_corrected_when_user_named_one_day(monkeypatch):
+    monkeypatch.setattr(agent, "_date", lambda v: dates.resolve(v, TODAY))
+    # прогон на Windows: «в понедельник», а модель передала сегодняшнюю субботу
+    fixed = agent.fix_dates("free_rooms", {"date": "2026-11-07", "start_time": "10:40"}, ["2026-11-09"])
+    assert fixed == {"date": "2026-11-09", "start_time": "10:40"}
+    assert agent.fix_dates("free_rooms", {"date": "понедельник"}, ["2026-11-09"]) == {"date": "понедельник"}
+    assert agent.fix_dates("free_rooms", {"date": "2026-11-07"}, ["2026-11-09", "2026-11-11"]) == {"date": "2026-11-07"}
+    assert agent.fix_dates("find_reschedule_slots", {"date_from": "2026-11-07"}, ["2026-11-09"]) == {"date_from": "2026-11-07"}

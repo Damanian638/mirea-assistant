@@ -9,10 +9,12 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
 
-_WEEKDAYS = {
-    "пн": 0, "понедельник": 0, "вт": 1, "вторник": 1, "ср": 2, "сред": 2, "чт": 3, "четверг": 3,
-    "пт": 4, "пятниц": 4, "сб": 5, "суббот": 5, "вс": 6, "воскресен": 6,
-}
+# Полные формы слов: «среди» или «субботник» не должны считаться днём недели.
+_WEEKDAY_RE = [
+    re.compile(r"(пн|понедельник[аеу]?)"), re.compile(r"(вт|вторник[аеу]?)"), re.compile(r"(ср|сред[аеуы])"),
+    re.compile(r"(чт|четверг[аеу]?)"), re.compile(r"(пт|пятниц[аеуы])"), re.compile(r"(сб|суббот[аеуы])"),
+    re.compile(r"(вс|воскресень[еяю])"),
+]
 _MONTHS = {
     "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "мая": 5, "май": 5, "июн": 6, "июл": 7,
     "август": 8, "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12,
@@ -21,8 +23,8 @@ _RELATIVE = {"сегодня": 0, "завтра": 1, "послезавтра": 2
 
 
 def _weekday(word: str) -> int | None:
-    for key, n in _WEEKDAYS.items():
-        if word == key or (len(key) > 2 and word.startswith(key)):
+    for n, rx in enumerate(_WEEKDAY_RE):
+        if rx.fullmatch(word):
             return n
     return None
 
@@ -86,3 +88,23 @@ def resolve(value: object, today: date | datetime) -> str | None:
             return (monday_next + timedelta(days=wd)).isoformat()
         return (today + timedelta(days=(wd - today.weekday()) % 7)).isoformat()  # ближайший, включая сегодня
     return raw
+
+
+def mentioned(text: str, today: date | datetime) -> list[str]:
+    """Даты, названные в сообщении пользователя («в понедельник», «завтра», «9 ноября», «09.11»)."""
+    if isinstance(today, datetime):
+        today = today.date()
+    low = (text or "").casefold().replace("ё", "е")
+    words = re.findall(r"[а-яa-z]+|\d+", low)
+    nxt = any(w.startswith("следующ") for w in words)
+    found: list[str] = []
+    for m in re.finditer(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b", low):
+        found.append(resolve(m.group(0), today) or "")
+    for i, w in enumerate(words):
+        if w in _RELATIVE:
+            found.append((today + timedelta(days=_RELATIVE[w])).isoformat())
+        elif _weekday(w) is not None:
+            found.append(resolve(("следующий " if nxt else "") + w, today) or "")
+        elif w.isdigit() and i + 1 < len(words) and _month(words[i + 1]):
+            found.append(resolve(f"{w} {words[i + 1]}", today) or "")
+    return [d for d in dict.fromkeys(found) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
