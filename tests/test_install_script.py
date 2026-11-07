@@ -40,3 +40,9 @@ def test_update_stops_running_assistant_first():
     install = PS.index("uv tool install --quiet")
     assert stop < install
     assert "/api/shutdown" in PS and "Stop-Process" in PS
+
+
+def test_shortcut_name_survives_non_russian_windows():
+    """Найдено прогоном на Windows с английской локалью: WScript.Shell сохранял «???????? ?????.lnk»."""
+    assert "mirea-assistant-tmp.lnk" in PS and "Move-Item -LiteralPath $Tmp" in PS
+    assert 'CreateShortcut((Join-Path $Dir "Помощник' not in PS

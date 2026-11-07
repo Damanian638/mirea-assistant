@@ -143,11 +143,16 @@ foreach ($Dir in @([Environment]::GetFolderPath("Desktop"), [Environment]::GetFo
     if (-not $Dir) { continue }
     try {
         if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Path $Dir -Force | Out-Null }
-        $Lnk = $Shell.CreateShortcut((Join-Path $Dir "Помощник МИРЭА.lnk"))
+        # WScript.Shell пишет имя файла в ANSI-кодировке: на нерусской Windows кириллица превращается в «????».
+        # Поэтому сохраняем под латинским именем и переименовываем средствами PowerShell (Unicode).
+        $Tmp = Join-Path $Dir "mirea-assistant-tmp.lnk"
+        $Final = Join-Path $Dir "Помощник МИРЭА.lnk"
+        $Lnk = $Shell.CreateShortcut($Tmp)
         $Lnk.TargetPath = $App
         $Lnk.WorkingDirectory = $env:USERPROFILE
-        $Lnk.Description = "Помощник преподавателя РТУ МИРЭА"
+        $Lnk.Description = "Mirea Assistant"
         $Lnk.Save()
+        Move-Item -LiteralPath $Tmp -Destination $Final -Force
         $Made++
     } catch {
         Write-Host "    ярлык в «$Dir» не создан: $($_.Exception.Message)" -ForegroundColor Yellow
