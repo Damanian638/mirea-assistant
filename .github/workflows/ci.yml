@@ -46,25 +46,32 @@ jobs:
         shell: pwsh  # PowerShell 7 читает этот шаг как UTF-8; сам установщик выше шёл через Windows PowerShell 5.1
         run: |
           $ErrorActionPreference = "Stop"
+          $problems = @()
+          $desk = [Environment]::GetFolderPath("Desktop")
           $shell = New-Object -ComObject WScript.Shell
-          $lnks = Get-ChildItem ([Environment]::GetFolderPath("Desktop")) -Filter *.lnk |
-            Where-Object { $shell.CreateShortcut($_.FullName).TargetPath -like "*mirea-assistant*" }
-          if (-not $lnks) { throw "нет ярлыка на рабочем столе" }
-          Write-Host "Ярлык: $($lnks.Name) -> $($shell.CreateShortcut($lnks[0].FullName).TargetPath)"
+          Write-Host "Рабочий стол: $desk"
+          $lnks = @(Get-ChildItem -LiteralPath $desk -Filter *.lnk -ErrorAction SilentlyContinue)
+          foreach ($l in $lnks) { Write-Host ("  {0} -> {1}" -f $l.Name, $shell.CreateShortcut($l.FullName).TargetPath) }
+          if (-not ($lnks | Where-Object { $_.Name -eq "Помощник МИРЭА.lnk" })) { $problems += "нет ярлыка «Помощник МИРЭА» на рабочем столе" }
+
           $bin = Join-Path ((uv tool dir --bin) | Select-Object -First 1).Trim() "mirea-assistant.exe"
           & $bin status
-          if ($LASTEXITCODE -ne 0) { throw "status: модель не готова" }
+          if ($LASTEXITCODE -ne 0) { $problems += "status: модель не готова" }
+
           $ok = $false
           for ($i = 0; $i -lt 30; $i++) {
             try { $s = Invoke-RestMethod http://127.0.0.1:8765/api/status; $ok = $true; break } catch { Start-Sleep 1 }
           }
-          if (-not $ok) { throw "помощник не запустился после установки" }
-          $s | ConvertTo-Json
-          $body = @{ messages = @(@{ role = "user"; content = "Какие аудитории свободны в понедельник на 2-й паре в В-78?" }) } | ConvertTo-Json -Depth 5
-          $r = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/api/chat -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600
-          Write-Host "ОТВЕТ: $($r.answer)"
-          Write-Host "ИНСТРУМЕНТЫ: $(($r.steps | ForEach-Object { $_.tool + '=' + $_.ok }) -join ', ')"
-          if (-not $r.answer) { throw "пустой ответ" }
+          if (-not $ok) { $problems += "помощник не запустился после установки" }
+          else {
+            $s | ConvertTo-Json -Compress | Write-Host
+            $body = @{ messages = @(@{ role = "user"; content = "Какие аудитории свободны в понедельник на 2-й паре в В-78?" }) } | ConvertTo-Json -Depth 5
+            $r = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/api/chat -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600
+            Write-Host "ОТВЕТ: $($r.answer)"
+            Write-Host "ИНСТРУМЕНТЫ: $(($r.steps | ForEach-Object { $_.tool + '=' + $_.ok + ' ' + ($_.args | ConvertTo-Json -Compress) }) -join '; ')"
+            if (-not $r.answer) { $problems += "пустой ответ" }
+          }
+          if ($problems) { throw ($problems -join "; ") }
       - name: Журнал помощника
         if: always()
         shell: powershell
