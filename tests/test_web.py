@@ -133,8 +133,89 @@ def test_busy_port_by_other_program(monkeypatch, capsys):
     assert "--port 8766" in capsys.readouterr().err
 
 
-def test_say_without_console(monkeypatch):
+def test_say_without_console(monkeypatch, no_message_box):
     monkeypatch.setattr("sys.stdout", None)
     monkeypatch.setattr("sys.stderr", None)
     cli.say("работает без консоли")
     cli.say("и ошибки тоже", error=True)
+    # ревью: при запуске ярлыком ошибка (например, занятый порт) раньше была видна только в журнале
+    assert no_message_box == ["и ошибки тоже"]
+
+
+def test_gui_crash_is_shown(monkeypatch, no_message_box):
+    def boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(cli, "main", boom)
+    assert cli.main_gui() == 1
+    assert no_message_box and "assistant.log" in no_message_box[0]
+
+
+@pytest.mark.parametrize(
+    "headers, code",
+    [
+        # «простой» запрос без preflight: раньше проходил проверку подстрокой
+        ({"Content-Type": "text/plain; x=application/json"}, 415),
+        # браузер без Origin, но с Sec-Fetch-Site: запрос с чужого сайта
+        ({"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"}, 403),
+        ({"Content-Type": "application/json", "Content-Length": "5000000"}, 413),
+        # своя страница и установщик (Invoke-RestMethod без Sec-Fetch-Site) проходят
+        ({"Content-Type": "application/json; charset=utf-8", "Sec-Fetch-Site": "same-origin"}, 200),
+        ({"Content-Type": "application/json"}, 200),
+    ],
+)
+def test_post_guard(app, headers, code):
+    r = app.post("/api/shutdown", content=b"{}", headers=headers)
+    assert r.status_code == code
+
+
+def test_local_clients_ignore_system_proxy(monkeypatch):
+    # ревью: httpx берёт прокси Windows из реестра без исключения <local> — запросы к Ollama уходили на прокси
+    from mirea_assistant.llm import Ollama
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    assert Ollama("m")._client.trust_env is False
+    calls = []
+
+    def fake_get(url, **kw):
+        calls.append(kw.get("trust_env"))
+        raise cli.httpx.ConnectError("no")
+
+    monkeypatch.setattr(cli.httpx, "get", fake_get)
+    assert cli.running_instance(PORT) is False
+    calls_before = len(calls)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    cli.ensure_ollama(wait_s=0)
+    assert len(calls) > calls_before and all(c is False for c in calls)
+
+
+def test_log_file_rotates(tmp_path, monkeypatch):
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    monkeypatch.setenv("MIREA_ASSISTANT_HOME", str(tmp_path))
+    root = logging.getLogger()
+    saved = root.handlers[:]
+    try:
+        cli._setup_logging(to_file=True)
+        assert isinstance(root.handlers[0], RotatingFileHandler)
+        root.handlers[0].close()
+    finally:
+        root.handlers[:] = saved
+
+
+def test_reinstall_keeps_manually_chosen_model(tmp_path, monkeypatch):
+    """Ревью: установщик при каждом обновлении вызывает configure --ram-gb и затирал выбор пользователя."""
+    monkeypatch.setenv("MIREA_ASSISTANT_HOME", str(tmp_path))
+    monkeypatch.delenv("MIREA_ASSISTANT_MODEL", raising=False)
+    assert cli.main(["configure", "--ram-gb", "12"]) == 0
+    assert cli.main(["configure", "--ram-gb", "16"]) == 0  # модель по памяти обновляется
+    assert config.Config.load().model == "qwen3:8b"
+    assert cli.main(["configure", "--model", "qwen3:4b-instruct-2507-q4_K_M"]) == 0
+    assert cli.main(["configure", "--ram-gb", "16"]) == 0  # повторная установка
+    assert config.Config.load().model == "qwen3:4b-instruct-2507-q4_K_M"
+    # старый config.json без auto_model — модель по памяти (переход на новую модель по умолчанию работает)
+    (tmp_path / "config.json").write_text('{"model": "qwen3:4b", "port": 8765}', encoding="utf-8")
+    assert cli.main(["configure", "--ram-gb", "12"]) == 0
+    assert config.Config.load().model == config.DEFAULT_MODEL

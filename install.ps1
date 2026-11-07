@@ -52,15 +52,21 @@ function Stop-Assistant {
         Write-Host "    выключаю запущенного помощника для обновления..."
         Start-Sleep -Seconds 2
     } catch {}
-    $dirs = @()
+    # Windows PowerShell 5.1: при "Stop" любое предупреждение uv в stderr (даже с 2>$null) обрывает установку.
+    $ErrorActionPreference = "Continue"
     $tools = uv tool dir 2>$null
-    if ($LASTEXITCODE -eq 0 -and $tools) { $dirs += Join-Path ($tools | Select-Object -First 1).Trim() "mirea-assistant" }
+    $AppDir = if ($LASTEXITCODE -eq 0 -and $tools) { Join-Path ($tools | Select-Object -First 1).Trim() "mirea-assistant" }
     $bins = uv tool dir --bin 2>$null
-    if ($LASTEXITCODE -eq 0 -and $bins) { $dirs += ($bins | Select-Object -First 1).Trim() }
+    $BinDirNow = if ($LASTEXITCODE -eq 0 -and $bins) { ($bins | Select-Object -First 1).Trim() }
+    $ErrorActionPreference = "Stop"
+    # Только сам помощник: python из его каталога uv и обёртки mirea-assistant*.exe.
+    # Чужой python.exe в ~\.local\bin (uv python install --default) не трогаем.
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $path = $_.Path
-        $path -and ($dirs | Where-Object { $path.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) -and
-            ($path -like "*mirea-assistant*" -or $path -like "*python*")
+        $path -and (
+            ($AppDir -and $path.StartsWith("$AppDir\", [StringComparison]::OrdinalIgnoreCase)) -or
+            ($BinDirNow -and $path.StartsWith("$BinDirNow\", [StringComparison]::OrdinalIgnoreCase) -and
+                (Split-Path -Leaf $path) -like "mirea-assistant*.exe"))
     } | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 }
@@ -124,10 +130,18 @@ if ($env:MIREA_ASSISTANT_MODEL) { & "$Bin" configure --model $env:MIREA_ASSISTAN
 if ($LASTEXITCODE -ne 0) { Fail "Не удалось сохранить настройки помощника." }
 $Model = (& "$Bin" model | Select-Object -Last 1).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $Model) { Fail "Не удалось определить модель." }
-$Drive = Get-PSDrive -Name ($env:USERPROFILE.Substring(0, 1))
-$FreeGb = [math]::Round($Drive.Free / 1GB, 1)
-$NeedGb = if ($Model -like "*8b*") { 7 } elseif ($Model -like "*1.7b*") { 2 } else { 4 }
-if ($FreeGb -lt $NeedGb) { Fail "Мало места на диске: свободно $FreeGb ГБ, для модели нужно около $NeedGb ГБ. Освободите место и повторите." }
+# При обновлении модель уже скачана: место проверяем, только если качать придётся.
+$HaveModel = $false
+try {
+    $Tags = (Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -TimeoutSec 5).models
+    $HaveModel = [bool]($Tags | Where-Object { $_.name -eq $Model -or $_.name -eq "$Model`:latest" })
+} catch {}
+if (-not $HaveModel) {
+    $Drive = Get-PSDrive -Name ($env:USERPROFILE.Substring(0, 1))
+    $FreeGb = [math]::Round($Drive.Free / 1GB, 1)
+    $NeedGb = if ($Model -like "*8b*") { 7 } elseif ($Model -like "*1.7b*") { 2 } else { 4 }
+    if ($FreeGb -lt $NeedGb) { Fail "Мало места на диске: свободно $FreeGb ГБ, для модели нужно около $NeedGb ГБ. Освободите место и повторите." }
+}
 Write-Host "    памяти $RamGb ГБ — модель $Model"
 
 # --- 4. Скачивание модели ---

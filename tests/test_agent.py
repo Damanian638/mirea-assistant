@@ -308,3 +308,26 @@ async def test_unknown_me_makes_model_ask_instead_of_calling():
     res = await agent.answer(llm, [{"role": "user", "content": "Какие у меня пары завтра?"}], me=None, tool_runner=runner)
     assert ran == [] and "ФИО" in res.text
     assert "ФИО пользователя неизвестно" in llm.calls[1][0][-1]["content"]
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("понедельник, четверг", [1, 4]), ("пятница", [5]), ("суббота", [6]), ("пн,вт,ср", [1, 2, 3]), ([2, 4], [2, 4])],
+)
+def test_weekday_names_for_reschedule(value, expected):
+    # ревью: «четверг»[:2] == «че» не совпадало с «чт» → «Ожидалось число»
+    assert agent._ints(value, agent._WEEKDAYS) == expected
+
+
+def test_lesson_date_corrected_when_user_named_one_day(monkeypatch):
+    from datetime import date as _d
+
+    from mirea_assistant import dates as D
+
+    monkeypatch.setattr(agent, "_date", lambda v: D.resolve(v, _d(2026, 11, 7)))
+    # «перенеси мою 1 пару в понедельник», а модель передала дату среды
+    fixed = agent.fix_dates("find_reschedule_slots", {"lesson_date": "2026-11-11", "lesson_pairs": [1]}, ["2026-11-09"])
+    assert fixed["lesson_date"] == "2026-11-09"
+    # названный день — новое время, а не дата пары: не трогаем
+    args = {"lesson_date": "2026-11-05", "date_from": "2026-11-09"}
+    assert agent.fix_dates("find_reschedule_slots", args, ["2026-11-09"]) == args

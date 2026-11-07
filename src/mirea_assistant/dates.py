@@ -38,8 +38,12 @@ def _month(word: str) -> int | None:
 
 def _with_year(today: date, month: int, day: int) -> date:
     d = date(today.year, month, day)
-    # «9 января», сказанное в ноябре, — это следующий год
-    return date(today.year + 1, month, day) if (today - d).days > 60 else d
+    # «9 января», сказанное в ноябре, — это следующий год; «28 декабря», сказанное 10 января, — прошлый
+    if (today - d).days > 60:
+        return date(today.year + 1, month, day)
+    if (d - today).days > 300:
+        return date(today.year - 1, month, day)
+    return d
 
 
 def resolve(value: object, today: date | datetime) -> str | None:
@@ -89,6 +93,10 @@ def resolve(value: object, today: date | datetime) -> str | None:
             # день на следующей неделе (неделя — с понедельника)
             monday_next = today + timedelta(days=7 - today.weekday())
             return (monday_next + timedelta(days=wd)).isoformat()
+        if any(w.startswith("прошл") for w in words):
+            # «в прошлую пятницу» — день прошлой недели (раньше получалась будущая пятница)
+            monday_prev = today - timedelta(days=today.weekday() + 7)
+            return (monday_prev + timedelta(days=wd)).isoformat()
         return (today + timedelta(days=(wd - today.weekday()) % 7)).isoformat()  # ближайший, включая сегодня
     return raw
 
@@ -100,6 +108,7 @@ def mentioned(text: str, today: date | datetime) -> list[str]:
     low = (text or "").casefold().replace("ё", "е")
     words = re.findall(r"[а-яa-z]+|\d+", low)
     nxt = any(w.startswith("следующ") for w in words)
+    prev = any(w.startswith("прошл") for w in words)
     found: list[str] = []
     for m in re.finditer(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b", low):
         found.append(resolve(m.group(0), today) or "")
@@ -107,7 +116,7 @@ def mentioned(text: str, today: date | datetime) -> list[str]:
         if w in _RELATIVE:
             found.append((today + timedelta(days=_RELATIVE[w])).isoformat())
         elif _weekday(w) is not None:
-            found.append(resolve(("следующий " if nxt else "") + w, today) or "")
+            found.append(resolve(("следующий " if nxt else "прошлый " if prev else "") + w, today) or "")
         elif w.isdigit() and i + 1 < len(words) and _month(words[i + 1]):
             found.append(resolve(f"{w} {words[i + 1]}", today) or "")
     found = [d for d in dict.fromkeys(found) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
@@ -121,15 +130,25 @@ def mentioned(text: str, today: date | datetime) -> list[str]:
     return found
 
 
-_PAIR_WORDS = {"перв": 1, "втор": 2, "трет": 3, "четвер": 4, "пят": 5, "шест": 6, "седьм": 7}
+_PAIR_WORDS = {"перв": 1, "втор": 2, "трет": 3, "четверт": 4, "пят": 5, "шест": 6, "седьм": 7}
+
+# Номер пары: цифра 1–7, не часть даты или времени («25.11», «10:40»), с окончанием «-я», «-й»…
+_PAIR_NUM = r"(?<![\d.:])[1-7](?![\d.:])(?:-?(?:я|й|ю|ой|ей))?"
+# Без вложенных неоднозначных повторов: старое выражение на «1 , 1 , … 1 x» работало экспоненциально долго
+# и останавливало сервер (ReDoS).
+_PAIR_LIST_RE = re.compile(rf"({_PAIR_NUM}(?:\s*(?:,|и|или)\s*{_PAIR_NUM})*)\s*пар")
+# Порядковое слово целиком: «вторник пару» и «пятницу пару» — не 2-я и не 5-я пара.
+_PAIR_WORD_RE = re.compile(
+    r"\b(перв|втор|трет|четверт|пят|шест|седьм)(?:ая|ой|ую|ое|ые|ых|ей|ья|ьей|ью|ье|ий|ым|ом)?\s+пар"
+)
 
 
 def mentioned_pairs(text: str) -> list[int]:
     """Номера пар в вопросе: «на 7 паре», «3-я пара», «первой паре». «1 и 2 пары» — обе."""
-    low = (text or "").casefold().replace("ё", "е")
+    low = (text or "").casefold().replace("ё", "е")[:4000]
     found: list[int] = []
-    for m in re.finditer(r"((?:\d\s*(?:-?(?:я|й|ю|ой|ей))?\s*(?:,|и|или)\s*)*\d)\s*-?(?:я|й|ю|ой|ей)?\s*пар", low):
+    for m in _PAIR_LIST_RE.finditer(low):
         found += [int(x) for x in re.findall(r"\d", m.group(1))]
-    for m in re.finditer(r"\b(перв|втор|трет|четверт|пят|шест|седьм)[а-я]*\s+пар", low):
-        found.append(next(v for k, v in _PAIR_WORDS.items() if m.group(1).startswith(k)))
+    for m in _PAIR_WORD_RE.finditer(low):
+        found.append(_PAIR_WORDS[m.group(1)])
     return [n for n in dict.fromkeys(found) if 1 <= n <= 7]

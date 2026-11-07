@@ -54,6 +54,11 @@ class Timetable:
     lessons: list[Lesson]
 
 
+def _msk(dt: datetime) -> datetime:
+    """iCal pymirea может отдать время без часового пояса: сравнение с московским тогда падает с TypeError."""
+    return dt.replace(tzinfo=S.MSK) if dt.tzinfo is None else dt
+
+
 def _items(payload) -> list[dict]:
     data = payload.get("data") if isinstance(payload, dict) else payload
     return [i for i in data or [] if isinstance(i, dict) and i.get("type") == "__lesson_schedule__"]
@@ -97,16 +102,22 @@ async def fetch(kind: str, query: str) -> Timetable:
                 "если оно верное, сервис расписания мог быть временно недоступен — повторите позже."
             )
         pick = S._pick(found, kind, query)
-        payload, _ = await sched._rpc("get_schedule_for_entity", {
+        payload, err = await sched._rpc("get_schedule_for_entity", {
             "p_entity_type": kind, "p_entity": pick.uid or pick.name, "p_organization_id": pm.SCHEDULE_ORGANIZATION_ID,
         })
     finally:
         await sched.close()
-    lessons = parse(payload) if payload is not None else []
+    if payload is None:
+        # pymirea не бросает исключение при таймауте, 5xx или открытом circuit breaker, а возвращает None.
+        # Пустое расписание здесь значило бы «группа свободна всю неделю» — и перенос на занятое время.
+        raise S.ServiceError(f"Не удалось загрузить расписание: {pick.name} ({err or 'сервис расписания недоступен'}). "
+                             "Повторите через минуту.")
+    lessons = parse(payload)
     if not lessons:
         # Запасной путь: формат ответа изменился — берём события pymirea (без групп), чтобы не сломаться.
         logger.warning("raw schedule without lessons for %s, falling back", kind)
         sched_obj = await S.fetch_entity(kind, query)
-        lessons = [Lesson(start=e.start, end=e.end or e.start + timedelta(minutes=90), subject=e.summary or "",
-                          rooms=[e.location] if e.location else []) for e in sched_obj.events]
+        lessons = [Lesson(start=_msk(e.start), end=_msk(e.end) if e.end else _msk(e.start) + timedelta(minutes=90),
+                          subject=e.summary or "", rooms=[e.location] if e.location else []) for e in sched_obj.events]
+        lessons.sort(key=lambda x: x.start)
     return Timetable(kind=kind, name=pick.name, lessons=lessons)

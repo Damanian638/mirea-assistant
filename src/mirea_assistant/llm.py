@@ -47,7 +47,10 @@ class Ollama:
         self.model = model
         self.host = host or ollama_host()
         # Первый ответ на слабом ПК (загрузка модели в память) может занять минуту-две.
-        self._client = httpx.AsyncClient(base_url=self.host, timeout=httpx.Timeout(timeout, connect=5.0))
+        # trust_env=False: httpx берёт системный прокси Windows из реестра и не учитывает исключение <local>,
+        # и запросы к 127.0.0.1 уходили бы на прокси кафедры («ИИ не запущен»).
+        self._client = httpx.AsyncClient(base_url=self.host, timeout=httpx.Timeout(timeout, connect=5.0),
+                                         trust_env=False)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -94,7 +97,10 @@ class Ollama:
             r = await self._post(body)
         if r.status_code >= 400:
             raise LLMError(f"Ollama вернула ошибку: {_error(r) or r.status_code}")
-        msg = r.json().get("message") or {}
+        try:
+            msg = r.json().get("message") or {}
+        except ValueError as e:  # не JSON (например, страница прокси): понятная ошибка вместо текста исключения
+            raise LLMError("Ollama вернула непонятный ответ. Перезапустите Ollama и повторите.") from e
         calls = []
         for c in msg.get("tool_calls") or []:
             fn = c.get("function") or {}

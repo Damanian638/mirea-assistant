@@ -22,6 +22,9 @@ def home() -> Path:
 class Config:
     model: str = DEFAULT_MODEL
     port: int = DEFAULT_PORT
+    # Модель выбрана по памяти: при обновлении её можно сменить на лучшую. Выбранную вручную
+    # (`configure --model`) обновление не трогает — раньше каждый повторный запуск установщика её затирал.
+    auto_model: bool = True
 
     @classmethod
     def load(cls) -> "Config":
@@ -32,7 +35,8 @@ class Config:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
             except ValueError:
                 data = {}
-        cfg = cls(model=str(data.get("model") or DEFAULT_MODEL), port=int(data.get("port") or DEFAULT_PORT))
+        cfg = cls(model=str(data.get("model") or DEFAULT_MODEL), port=int(data.get("port") or DEFAULT_PORT),
+                  auto_model=data.get("auto_model") is not False)
         if os.environ.get("MIREA_ASSISTANT_MODEL"):
             cfg.model = os.environ["MIREA_ASSISTANT_MODEL"]
         return cfg

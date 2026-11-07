@@ -186,3 +186,72 @@ def test_parse_raw_mirea_payload_keeps_groups():
     assert x.groups == ["РИБО-02-23"] and x.campus == "В-78" and x.location() == "Б-202 (В-78)"
     assert x.teachers == [TEACHER] and x.kind_ru == "лабораторная"
     assert L.parse({"data": payload})[0].groups == ["РИБО-02-23"]
+
+
+async def test_lesson_date_without_pair_asks_which(world):
+    # ревью: без номера пары переносились все занятия дня (1–2 пара РИБО и 5 пара РРБО) без вопроса
+    with pytest.raises(S.ServiceError, match="несколько пар.*Уточните"):
+        await slots.find_slots("Коняшкин", lesson_date="2030-01-07", need_room=False)
+    world["ЭФБО-08-24"] = []
+    res = await slots.find_slots("Коняшкин", lesson_date="2030-01-08", need_room=False)  # одна пара — понятно какая
+    assert res["groups"] == ["ЭФБО-08-24"]
+
+
+async def test_sunday_only_is_explained(world):
+    with pytest.raises(S.ServiceError, match="воскресеньям"):
+        await slots.find_slots("Коняшкин", lesson_date="2030-01-07", lesson_pairs=[1, 2], weekdays=[7])
+
+
+async def test_unknown_campus_does_not_drop_best_slots(world):
+    # ревью: «Вернадского» без номера → 0 аудиторий везде, 30 лучших вариантов выбрасывались,
+    # а наверх выходили непроверенные
+    with pytest.raises(S.ServiceError, match="Вернадского.*Проверьте корпус"):
+        await slots.find_slots("Коняшкин", lesson_date="2030-01-07", lesson_pairs=[1, 2], campus="Вернадского")
+
+
+class _Sched:
+    def __init__(self, payload, err=None):
+        self.payload, self.err = payload, err
+
+    async def _rpc(self, name, body):
+        return self.payload, self.err
+
+    async def close(self):
+        pass
+
+
+def _fake_mirea(monkeypatch, payload, err=None, fallback_events=()):
+    class Found:
+        name, uid = "РИБО-02-23", "1"
+
+    async def search(sched, kind, query):
+        return [Found()]
+
+    async def fetch_entity(kind, query):
+        class Sch:
+            events = list(fallback_events)
+        return Sch()
+
+    monkeypatch.setattr(L, "MireaSchedule", lambda: _Sched(payload, err))
+    monkeypatch.setattr(S, "_search", search)
+    monkeypatch.setattr(S, "_pick", lambda found, kind, query: found[0])
+    monkeypatch.setattr(S, "fetch_entity", fetch_entity)
+
+
+async def test_failed_schedule_load_is_an_error_not_a_free_group(monkeypatch):
+    # ревью: pymirea при таймауте/5xx возвращает None — группа выглядела свободной всю неделю
+    _fake_mirea(monkeypatch, None, "Сервис расписания не отвечает")
+    with pytest.raises(S.ServiceError, match="Не удалось загрузить расписание.*не отвечает"):
+        await L.fetch("group", "РИБО-02-23")
+
+
+async def test_fallback_events_get_moscow_time(monkeypatch):
+    # ревью: iCal pymirea отдаёт время без часового пояса → TypeError при сравнении в поиске слотов
+    class Ev:
+        start, end, summary, location = datetime(2030, 1, 8, 9, 0), None, "Матан", "А-1"
+
+    _fake_mirea(monkeypatch, [], fallback_events=[Ev()])
+    tt = await L.fetch("group", "РИБО-02-23")
+    x = tt.lessons[0]
+    assert x.start.tzinfo is not None and x.end.tzinfo is not None
+    assert slots.conflicts(slots.busy_of(tt.lessons, "g"), datetime(2030, 1, 8).date(), [1])

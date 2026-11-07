@@ -122,6 +122,12 @@ def _pick_lessons(tt: L.Timetable, day: date, pairs: list[int] | None) -> list[L
     that_day = [x for x in tt.lessons if x.day == day]
     if not that_day:
         raise S.ServiceError(f"{human_date(day)} у преподавателя {tt.name} нет занятий — проверьте дату.")
+    if not pairs and len(that_day) > 1:
+        # Без номера пары раньше переносились ВСЕ занятия дня, с разными группами — без вопроса.
+        raise S.ServiceError(
+            f"{human_date(day)} у преподавателя {tt.name} несколько пар: {_describe(that_day)}. "
+            "Уточните, какую переносим (lesson_pairs)."
+        )
     chosen = [x for x in that_day if not pairs or pair_of(x) in pairs]
     missing = sorted(set(pairs or []) - {pair_of(x) for x in chosen})
     if missing or not chosen:
@@ -148,6 +154,8 @@ async def find_slots(
     lesson_pairs = _ints(lesson_pairs, range(1, 8), "Номер переносимой пары")
     allowed = _ints(allowed_pairs, range(1, 8), "Номер пары") or list(BELLS)
     weekdays = _ints(weekdays, range(1, 8), "День недели")
+    if weekdays and set(weekdays) == {7}:
+        raise S.ServiceError("По воскресеньям занятий нет: выберите дни с понедельника по субботу.")
     lesson_day = S._start_of(lesson_date, "lesson_date").date() if lesson_date else None
     start = S._start_of(date_from, "date_from").date() if date_from else (lesson_day or datetime.now(MSK).date())
     end = S._start_of(date_to, "date_to").date() if date_to else start + timedelta(days=13 if lesson_day else 6)
@@ -231,6 +239,13 @@ async def find_slots(
         to_check = candidates[:MAX_ROOM_CHECKS]
         checked = len(to_check)
         await asyncio.gather(*(fill(s) for s in to_check))
+        if campus and all(s.rooms_total == 0 for s in to_check):
+            # Обычно это неточное название корпуса («Вернадского» без номера): иначе лучшие варианты были бы
+            # выброшены, а наверх вышли бы непроверенные.
+            raise S.ServiceError(
+                f"В корпусе «{campus}» не найдено свободных аудиторий ни в одном из {checked} лучших вариантов. "
+                "Проверьте корпус (В-78, В-86, С-20, МП-1, СГ-22) или ищите без корпуса."
+            )
         candidates = [s for s in to_check if s.rooms_total != 0] + candidates[checked:]
         candidates.sort(key=lambda s: (-s.score, s.day, s.pairs[0]))
 

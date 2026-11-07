@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import webbrowser
+from logging.handlers import RotatingFileHandler
 
 import httpx
 
@@ -27,7 +28,8 @@ def _setup_logging(to_file: bool) -> None:
     if to_file:  # у оконного запуска нет консоли: sys.stdout/sys.stderr равны None
         path = home() / "assistant.log"
         path.parent.mkdir(parents=True, exist_ok=True)
-        handler: logging.Handler = logging.FileHandler(path, encoding="utf-8")
+        # с ротацией: журнал живёт годами в профиле пользователя
+        handler: logging.Handler = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
     else:
         handler = logging.StreamHandler(sys.stderr)
     from mirea_connect.logs import RedactingFormatter
@@ -46,12 +48,25 @@ def say(message: str, *, error: bool = False) -> None:
         print(message, file=stream)
     else:  # оконный запуск: сообщение остаётся в assistant.log
         (logger.error if error else logger.info)(message)
+        if error:  # иначе двойной щелчок по ярлыку при ошибке (занят порт) просто ничего не делает
+            message_box(message)
+
+
+def message_box(message: str) -> None:
+    """Окно с ошибкой для запуска ярлыком (без консоли). Вне Windows — ничего."""
+    if sys.platform != "win32":
+        return
+    with contextlib.suppress(Exception):
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, "Помощник МИРЭА", 0x10)  # MB_ICONERROR
 
 
 def running_instance(port: int) -> bool:
     """На порту уже работает наш помощник (повторный запуск ярлыка)."""
     try:
-        r = httpx.get(f"http://127.0.0.1:{port}/api/status", headers={"Host": f"127.0.0.1:{port}"}, timeout=2)
+        r = httpx.get(f"http://127.0.0.1:{port}/api/status", headers={"Host": f"127.0.0.1:{port}"}, timeout=2,
+                      trust_env=False)  # системный прокси Windows не должен перехватывать 127.0.0.1
         return r.status_code == 200 and r.json().get("app") == APP_ID
     except (httpx.HTTPError, ValueError):
         return False
@@ -74,7 +89,7 @@ def ensure_ollama(wait_s: float = 20) -> bool:
 
     def up() -> bool:
         try:
-            return httpx.get(url, timeout=2).status_code == 200
+            return httpx.get(url, timeout=2, trust_env=False).status_code == 200
         except httpx.HTTPError:
             return False
 
@@ -162,10 +177,10 @@ def main(argv: list[str] | None = None, *, gui: bool = False) -> int:
 
     if args.cmd == "configure":
         cfg = Config.load()
-        if args.ram_gb is not None:
+        if args.ram_gb is not None and cfg.auto_model:
             cfg.model = model_for_ram(args.ram_gb)
         if args.model:
-            cfg.model = args.model
+            cfg.model, cfg.auto_model = args.model, False
         if args.cfg_port:
             cfg.port = args.cfg_port
         path = cfg.save()
@@ -191,4 +206,5 @@ def main_gui() -> int:
         return main(gui=True)
     except Exception:
         logger.exception("assistant crashed")
+        message_box(f"Помощник не запустился. Подробности в журнале: {home() / 'assistant.log'}")
         return 1

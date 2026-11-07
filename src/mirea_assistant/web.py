@@ -18,6 +18,7 @@ from .llm import LLMError, Ollama
 logger = logging.getLogger(__name__)
 
 APP_ID = "mirea-assistant"
+MAX_BODY = 1_000_000  # история обрезается до 12 сообщений по 4000 символов; больше не нужно
 _HEADERS = {
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
@@ -35,11 +36,24 @@ def create_app(llm: Ollama, port: int, on_shutdown: Callable[[], None] | None = 
         # Защита от чужих сайтов: DNS rebinding (Host) и запросы с других страниц (Origin).
         if request.headers.get("host") not in allowed:
             return JSONResponse({"error": "forbidden host"}, status_code=403)
+        if request.method != "POST":
+            return None
         origin = request.headers.get("origin")
-        if request.method == "POST" and origin and origin not in origins:
+        if origin and origin not in origins:
             return JSONResponse({"error": "forbidden origin"}, status_code=403)
-        if request.method == "POST" and "application/json" not in request.headers.get("content-type", ""):
+        # Запасная защита для браузеров/расширений, которые не шлют Origin: Sec-Fetch-Site ставит сам браузер.
+        # Установщик (Invoke-RestMethod) этот заголовок не шлёт и проходит.
+        if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+            return JSONResponse({"error": "forbidden origin"}, status_code=403)
+        # Строго по типу: «text/plain; x=application/json» — «простой» запрос без preflight, раньше проходил.
+        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
             return JSONResponse({"error": "expected JSON"}, status_code=415)
+        try:
+            too_big = int(request.headers.get("content-length") or 0) > MAX_BODY
+        except ValueError:
+            too_big = True
+        if too_big:
+            return JSONResponse({"error": "Слишком длинный запрос."}, status_code=413)
         return None
 
     async def index(request: Request) -> Response:

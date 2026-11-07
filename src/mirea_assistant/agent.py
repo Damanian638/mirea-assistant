@@ -28,7 +28,8 @@ _KINDS = {
     "teacher": "teacher", "преподаватель": "teacher", "препод": "teacher", "teachers": "teacher",
     "classroom": "classroom", "аудитория": "classroom", "room": "classroom", "rooms": "classroom",
 }
-_WEEKDAYS = {"пн": 1, "вт": 2, "ср": 3, "чт": 4, "пт": 5, "сб": 6, "вс": 7}
+# Первые две буквы сокращения или полного названия: «четверг»[:2] == «че», а не «чт».
+_WEEKDAYS = {"пн": 1, "по": 1, "вт": 2, "ср": 3, "чт": 4, "че": 4, "пт": 5, "пя": 5, "сб": 6, "су": 6, "вс": 7, "во": 7}
 
 TOOLS = [
     {
@@ -341,6 +342,11 @@ def fix_dates(name: str, args: dict, user_dates: list[str]) -> dict:
         return args
     wanted = user_dates[0]
     key = {"timetable": "date_from", "free_rooms": "date"}.get(name)
+    if name == "find_reschedule_slots" and _str(args.get("lesson_date")):
+        # Дата переносимой пары: ошибка модели здесь молча переносит другое занятие с другой группой.
+        # Если названный день — это новое время (date_from/date_to), дату пары не трогаем.
+        if wanted not in (_date(args.get("date_from")), _date(args.get("date_to"))):
+            key = "lesson_date"
     if not key:
         return args
     given = _date(args.get(key))

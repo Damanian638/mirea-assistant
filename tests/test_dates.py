@@ -116,3 +116,51 @@ def test_model_date_corrected_when_user_named_one_day(monkeypatch):
 )
 def test_mentioned_pairs(text, pairs):
     assert dates.mentioned_pairs(text) == pairs
+
+
+@pytest.mark.parametrize(
+    "text, pairs",
+    [
+        # ревью: корень «втор»/«пят» внутри дня недели давал ложную 2-ю/5-ю пару
+        ("перенеси во вторник пару", []),
+        ("свободна ли А-9 в пятницу пару 3?", []),
+        ("на третьей паре", [3]),
+        ("первую пару", [1]),
+        # цифра из даты перед словом «пару» — не номер пары
+        ("аудитории на 25.11 пару 4", []),
+        ("в 10:40 пара", []),
+    ],
+)
+def test_mentioned_pairs_no_false_positives(text, pairs):
+    assert dates.mentioned_pairs(text) == pairs
+
+
+def test_mentioned_pairs_is_linear_time():
+    # ревью: старое выражение на таком вводе работало экспоненциально и вешало сервер (ReDoS)
+    import time
+
+    t = time.perf_counter()
+    assert dates.mentioned_pairs("1 , " * 1000 + "1 x") == []
+    assert time.perf_counter() - t < 1.0
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("в прошлую пятницу", "2026-10-30"),
+        ("прошлый понедельник", "2026-10-26"),
+    ],
+)
+def test_resolve_previous_week(text, expected):
+    assert dates.resolve(text, TODAY) == expected
+
+
+def test_mentioned_previous_week():
+    assert dates.mentioned("за пару в прошлую пятницу", TODAY) == ["2026-10-30"]
+
+
+def test_december_named_in_january_is_previous_year():
+    jan = date(2027, 1, 10)
+    assert dates.resolve("28 декабря", jan) == "2026-12-28"
+    assert dates.resolve("28.12", jan) == "2026-12-28"
+    assert dates.resolve("15 января", jan) == "2027-01-15"
