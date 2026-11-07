@@ -56,7 +56,10 @@ def resolve(value: object, today: date | datetime) -> str | None:
     text = raw.casefold().replace("ё", "е")
     words = re.findall(r"[а-яa-z]+|\d+", text)
 
-    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?", raw)
+    iso = re.search(r"\b\d{4}-\d{2}-\d{2}\b", raw)
+    if iso:  # «понедельник 2026-11-16» — точная дата важнее слова
+        return iso.group(0)
+    m = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\b", raw)
     if m:
         day, month = int(m.group(1)), int(m.group(2))
         try:
@@ -108,3 +111,17 @@ def mentioned(text: str, today: date | datetime) -> list[str]:
         elif w.isdigit() and i + 1 < len(words) and _month(words[i + 1]):
             found.append(resolve(f"{w} {words[i + 1]}", today) or "")
     return [d for d in dict.fromkeys(found) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+
+
+_PAIR_WORDS = {"перв": 1, "втор": 2, "трет": 3, "четвер": 4, "пят": 5, "шест": 6, "седьм": 7}
+
+
+def mentioned_pairs(text: str) -> list[int]:
+    """Номера пар в вопросе: «на 7 паре», «3-я пара», «первой паре». «1 и 2 пары» — обе."""
+    low = (text or "").casefold().replace("ё", "е")
+    found: list[int] = []
+    for m in re.finditer(r"((?:\d\s*(?:-?(?:я|й|ю|ой|ей))?\s*(?:,|и|или)\s*)*\d)\s*-?(?:я|й|ю|ой|ей)?\s*пар", low):
+        found += [int(x) for x in re.findall(r"\d", m.group(1))]
+    for m in re.finditer(r"\b(перв|втор|трет|четверт|пят|шест|седьм)[а-я]*\s+пар", low):
+        found.append(next(v for k, v in _PAIR_WORDS.items() if m.group(1).startswith(k)))
+    return [n for n in dict.fromkeys(found) if 1 <= n <= 7]

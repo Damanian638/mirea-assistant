@@ -176,7 +176,10 @@ def test_system_prompt_has_calendar_and_me():
     now = datetime(2026, 11, 7, 14, 0, tzinfo=agent.slots.MSK)  # суббота
     p = agent.system_prompt("Петров Пётр Петрович", now)
     assert "суббота 07.11.2026 = 2026-11-07 (сегодня)" in p
-    assert "понедельник 09.11.2026 = 2026-11-09 — следующая неделя" in p
+    assert "понедельник 09.11.2026 = 2026-11-09 — начало следующей недели" in p
+    # экзамен: пометка «следующая неделя» стояла у каждого понедельника, и модель брала 16 ноября
+    assert p.count("начало следующей недели") == 1
+    assert "понедельник 16.11.2026 = 2026-11-16 — начало недели через одну" in p
     assert "Петров Пётр Петрович" in p and "10:40–12:10" in p and "В-78" in p
     assert "спроси ФИО" in agent.system_prompt(None, now)
 
@@ -215,6 +218,7 @@ async def test_ollama_request_shape_and_tool_call_parsing():
     r = await llm.chat([{"role": "user", "content": "x"}], agent.TOOLS)
     body = json.loads(route.calls.last.request.content)
     assert body["model"] == "qwen3:4b" and body["think"] is False and body["stream"] is False
+    assert body["options"]["num_predict"] == 1024  # предел длины: модель не «заговорится» навсегда
     assert {t["function"]["name"] for t in body["tools"]} == {"timetable", "free_rooms", "find_reschedule_slots", "search"}
     assert r.tool_calls[0].name == "search" and r.tool_calls[0].arguments == {"kind": "group", "query": "ЭФБО"}
 
@@ -256,3 +260,21 @@ async def test_ollama_status():
     assert (await llm.status())["model_ready"] is True
     assert (await llm.status()) == {"ollama": True, "model": "qwen3:4b", "model_ready": False}
     assert (await llm.status())["ollama"] is False
+
+
+@pytest.mark.parametrize(
+    "user, args, start, end",
+    [
+        # экзамен qwen3:8b: «на 7 паре» → время 5-й пары
+        ("Свободны ли Б-202 и В-317 в среду на 7 паре?", {"date": "среда", "start_time": "16:20", "end_time": "17:50"}, "19:40", "21:10"),
+        ("аудитории на 3 паре", {"date": "x", "pair": 5}, "12:40", "14:10"),  # слова пользователя важнее
+        ("аудитории завтра", {"date": "x", "pair": "2"}, "10:40", "12:10"),
+        ("с 10:40 до 12:10 на 2 паре", {"date": "x", "start_time": "10:40", "end_time": "12:10"}, "10:40", "12:10"),
+        ("аудитории на 1 и 2 паре", {"date": "x", "start_time": "09:00", "end_time": "12:10"}, "09:00", "12:10"),  # две пары — не трогаем
+    ],
+)
+def test_pair_time_fixed(user, args, start, end):
+    from mirea_assistant import dates
+
+    out = agent.fix_pair_time("free_rooms", args, dates.mentioned_pairs(user), user)
+    assert (out["start_time"], out["end_time"]) == (start, end) and "pair" not in out

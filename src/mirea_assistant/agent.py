@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
@@ -56,12 +57,13 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "date": {"type": "string", "description": "ГГГГ-ММ-ДД или слово, как сказал пользователь («завтра», «понедельник»)"},
-                    "start_time": {"type": "string", "description": "ЧЧ:ММ, начало пары по звонкам"},
-                    "end_time": {"type": "string", "description": "ЧЧ:ММ, конец пары"},
+                    "pair": {"type": "integer", "description": "Номер пары 1–7, если пользователь назвал пару — тогда время не нужно"},
+                    "start_time": {"type": "string", "description": "ЧЧ:ММ, если пользователь назвал время, а не пару"},
+                    "end_time": {"type": "string", "description": "ЧЧ:ММ"},
                     "campus": {"type": "string", "description": "Корпус: В-78, В-86, С-20, МП-1, СГ-22"},
                     "rooms": {"type": "array", "items": {"type": "string"}, "description": "Конкретные аудитории для проверки"},
                 },
-                "required": ["date", "start_time", "end_time"],
+                "required": ["date"],
             },
         },
     },
@@ -331,9 +333,34 @@ def fix_dates(name: str, args: dict, user_dates: list[str]) -> dict:
     return fixed
 
 
-def effective_args(name: str, args: dict, me: str | None, user_dates: list[str]) -> dict:
+def fix_pair_time(name: str, args: dict, user_pairs: list[int], user_text: str) -> dict:
+    """free_rooms: номер пары → время по звонкам. Если пользователь назвал одну пару, верна она.
+
+    Экзамен qwen3:8b: «на 7 паре» → модель передала время 5-й пары."""
+    if name != "free_rooms":
+        return args
+    out = dict(args)
+    pair = out.pop("pair", None)
+    try:
+        pair = int(pair) if pair not in (None, "") else None
+    except (TypeError, ValueError):
+        pair = None
+    explicit_time = re.search(r"\b\d{1,2}:\d{2}\b", user_text or "")
+    if len(user_pairs) == 1 and not explicit_time:
+        pair = user_pairs[0]
+    if pair in slots.BELLS:
+        start, end = slots.BELLS[pair]
+        if (out.get("start_time"), out.get("end_time")) != (start, end):
+            logger.info("pair time for free_rooms: %s-%s -> pair %s", out.get("start_time"), out.get("end_time"), pair)
+        out["start_time"], out["end_time"] = start, end
+    return out
+
+
+def effective_args(name: str, args: dict, me: str | None, user_dates: list[str],
+                   user_pairs: list[int] | None = None, user_text: str = "") -> dict:
     """Аргументы, с которыми программа реально вызовет инструмент (после подстановки ФИО и исправления даты)."""
     out = fix_dates(name, with_me(name, args, me), user_dates)
+    out = fix_pair_time(name, out, user_pairs or [], user_text)
     if _str(out.get("campus")):
         out = {**out, "campus": _campus(out["campus"])}
     return out
@@ -344,10 +371,16 @@ def effective_args(name: str, args: dict, me: str | None, user_dates: list[str])
 
 def calendar_lines(today: datetime, days: int = 21) -> list[str]:
     out = []
+    mondays = 0
     for i in range(-1, days):
         d = (today + timedelta(days=i)).date()
         mark = {-1: " (вчера)", 0: " (сегодня)", 1: " (завтра)"}.get(i, "")
-        week = " — следующая неделя" if d.weekday() == 0 and i > 0 else ""
+        week = ""
+        if d.weekday() == 0 and i > 0:
+            # Пометка только у ближайшего понедельника: раньше «следующая неделя» стояла у каждого,
+            # и модель считала «следующую неделю» с 16 ноября вместо 9-го.
+            mondays += 1
+            week = {1: " — начало следующей недели", 2: " — начало недели через одну"}.get(mondays, "")
         out.append(f"{WEEKDAY_NAMES[d.weekday()]} {d.strftime('%d.%m.%Y')} = {d.isoformat()}{mark}{week}")
     return out
 
@@ -379,7 +412,9 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
 - «…проверь с 16 по 22 ноября» → то же + date_from="16 ноября", date_to="22 ноября"
 - «Когда поставить отработку для ЭФБО-01-24 на этой неделе?» → find_reschedule_slots(teacher="{t}", groups=["ЭФБО-01-24"], date_from="сегодня")
 - «У какой группы у меня пары в понедельник?» → timetable(kind="teacher", name="{t}", date_from="понедельник", days=1)
-- «Свободные аудитории завтра на 3 паре» → free_rooms(date="завтра", start_time="12:40", end_time="14:10")
+- «Перенеси мою 3 пару в пятницу, можно только на понедельник или вторник» → find_reschedule_slots(teacher="{t}", lesson_date="пятница", lesson_pairs=[3], weekdays=[1, 2])
+- «Свободные аудитории завтра на 3 паре» → free_rooms(date="завтра", pair=3)
+- «Свободна ли А-214 в среду с 10:40 до 12:10?» → free_rooms(date="среда", start_time="10:40", end_time="12:10", rooms=["А-214"])
 
 Календарь:
 """ + "\n".join(calendar_lines(now))
@@ -419,6 +454,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
     steps: list[Step] = []
     seen: set[str] = set()
     user_dates = dates.mentioned(clean[-1]["content"], clock())
+    user_pairs = dates.mentioned_pairs(clean[-1]["content"])
 
     for _ in range(MAX_ROUNDS):
         reply = await llm.chat(messages, TOOLS, think=think)
@@ -427,7 +463,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
         messages.append({"role": "assistant", "content": reply.content,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in reply.tool_calls]})
         for call in reply.tool_calls:
-            call.arguments = effective_args(call.name, call.arguments, me, user_dates)
+            call.arguments = effective_args(call.name, call.arguments, me, user_dates, user_pairs, clean[-1]["content"])
             key = call.name + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
             if key in seen:  # маленькие модели иногда зацикливаются на одном вызове
                 result, ok = "Этот запрос уже выполнен, результат выше. Ответь пользователю.", True
