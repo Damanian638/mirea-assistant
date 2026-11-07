@@ -43,11 +43,14 @@ jobs:
         shell: powershell
         run: Get-Content -Raw -Encoding UTF8 .\install.ps1 | Invoke-Expression
       - name: Проверка результата
-        shell: powershell
+        shell: pwsh  # PowerShell 7 читает этот шаг как UTF-8; сам установщик выше шёл через Windows PowerShell 5.1
         run: |
           $ErrorActionPreference = "Stop"
-          $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "Помощник МИРЭА.lnk"
-          if (-not (Test-Path -LiteralPath $lnk)) { throw "нет ярлыка $lnk" }
+          $shell = New-Object -ComObject WScript.Shell
+          $lnks = Get-ChildItem ([Environment]::GetFolderPath("Desktop")) -Filter *.lnk |
+            Where-Object { $shell.CreateShortcut($_.FullName).TargetPath -like "*mirea-assistant*" }
+          if (-not $lnks) { throw "нет ярлыка на рабочем столе" }
+          Write-Host "Ярлык: $($lnks.Name) -> $($shell.CreateShortcut($lnks[0].FullName).TargetPath)"
           $bin = Join-Path ((uv tool dir --bin) | Select-Object -First 1).Trim() "mirea-assistant.exe"
           & $bin status
           if ($LASTEXITCODE -ne 0) { throw "status: модель не готова" }
