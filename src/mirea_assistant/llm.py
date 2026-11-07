@@ -71,13 +71,14 @@ class Ollama:
         except httpx.HTTPError as e:
             raise LLMError("Не удаётся связаться с Ollama. Запустите приложение Ollama и повторите.") from e
 
-    async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
+    async def chat(self, messages: list[dict], tools: list[dict] | None = None, think: bool = False) -> Reply:
         body = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            # Режим «рассуждений» qwen3 на процессоре удлиняет ответ в разы, а для вызова инструментов не нужен.
-            "think": False,
+            # Рассуждения qwen3 точнее на сложных вопросах, но на процессоре удлиняют ответ в разы:
+            # включаются галочкой «Думать тщательнее».
+            "think": think,
             "options": {"temperature": 0.2, "num_ctx": 8192},
             "keep_alive": "30m",
         }

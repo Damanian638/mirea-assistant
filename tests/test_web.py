@@ -38,16 +38,16 @@ def test_page_and_status(app):
 def test_chat_passes_history_and_me(app, monkeypatch):
     seen = {}
 
-    async def fake_answer(llm, messages, me=None):
-        seen.update(messages=messages, me=me)
+    async def fake_answer(llm, messages, me=None, think=False):
+        seen.update(messages=messages, me=me, think=think)
         return agent.Answer("Ответ", [agent.Step("search", {"query": "ЭФБО"}, True, "Найдено: ЭФБО-01-24")])
 
     monkeypatch.setattr(agent, "answer", fake_answer)
-    r = app.post("/api/chat", json={"messages": [{"role": "user", "content": "вопрос"}], "me": " Иванов И. И. "})
+    r = app.post("/api/chat", json={"messages": [{"role": "user", "content": "вопрос"}], "me": " Иванов И. И. ", "think": True})
     assert r.status_code == 200
     assert r.json() == {"answer": "Ответ", "steps": [{"tool": "search", "args": {"query": "ЭФБО"}, "ok": True,
                                                       "result": "Найдено: ЭФБО-01-24"}]}
-    assert seen["me"] == "Иванов И. И."
+    assert seen["me"] == "Иванов И. И." and seen["think"] is True
 
 
 @pytest.mark.parametrize(

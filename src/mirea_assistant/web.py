@@ -61,9 +61,10 @@ def create_app(llm: Ollama, port: int, on_shutdown: Callable[[], None] | None = 
         if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) for m in messages):
             return JSONResponse({"error": "Некорректный запрос."}, status_code=400)
         me = str(body.get("me") or "").strip()[:100] or None
+        think = body.get("think") is True
         async with busy:
             try:
-                result = await agent.answer(llm, messages, me)
+                result = await agent.answer(llm, messages, me, think=think)
             except LLMError as e:
                 return JSONResponse({"error": str(e)}, status_code=503)
             except ValueError as e:

@@ -21,8 +21,9 @@ class FakeLLM:
         self.replies = list(replies)
         self.calls: list[tuple[list[dict], list | None]] = []
 
-    async def chat(self, messages, tools=None):
+    async def chat(self, messages, tools=None, think=False):
         self.calls.append(([dict(m) for m in messages], tools))
+        self.think = think
         return self.replies.pop(0)
 
 
@@ -50,28 +51,69 @@ async def test_tool_result_goes_back_to_model_and_answer_returned():
 async def test_argument_normalisation_for_small_models(monkeypatch):
     got = {}
 
-    async def find_slots(*a):
-        got["args"] = a
-        return {"teacher": "Т", "groups": [], "campus": None, "period": "p", "slots_found": 0, "slots": [], "note": "n"}
+    async def find_slots(teacher, **kw):
+        got.update(teacher=teacher, **kw)
+        return {"teacher": "Т", "moving": None, "moving_date": None, "groups": [], "campus": None, "pairs_in_a_row": 1,
+                "period": "p", "slots_found": 0, "slots": [], "note": "n"}
 
     monkeypatch.setattr(agent.slots, "find_slots", find_slots)
+    monkeypatch.setattr(agent, "_date", lambda v: v)
     await agent.run_tool("find_reschedule_slots", {"teacher": " Иванов ", "groups": "ЭФБО-01-24; ЭФБО-02-24",
-                                                   "date_from": "2030-01-07", "pairs": ["5", 6.0], "weekdays": ["Вт", "4"]})
-    teacher, groups, d0, d1, campus, pairs, weekdays = got["args"]
-    assert teacher == "Иванов" and groups == ["ЭФБО-01-24", "ЭФБО-02-24"]
-    assert pairs == [5, 6] and weekdays == [2, 4] and d1 is None and campus is None
+                                                   "lesson_date": "9 ноября", "lesson_pairs": ["1", 2.0],
+                                                   "pairs": ["5", 6], "weekdays": ["Вт", "4"]})
+    assert got["teacher"] == "Иванов" and got["groups"] == ["ЭФБО-01-24", "ЭФБО-02-24"]
+    assert got["lesson_pairs"] == [1, 2] and got["lesson_date"] == "9 ноября"
+    assert got["allowed_pairs"] == [5, 6]  # старое имя pairs понимается как ограничение нового времени
+    assert got["weekdays"] == [2, 4] and got["date_to"] is None and got["campus"] is None
 
 
-async def test_russian_kind_words_accepted(monkeypatch):
+async def test_teacher_timetable_shows_groups(monkeypatch):
+    """Реальный случай: «у какой группы пары 9 ноября» — групп в расписании не было, модель выдумала «РИБО, РРБО»."""
+    from datetime import datetime as dt
+
+    from mirea_assistant import lessons as L
+
+    msk = agent.slots.MSK
+    tt = L.Timetable("teacher", "Коняшкин Георгий Викторович", [
+        L.Lesson(dt(2026, 11, 9, 9, 0, tzinfo=msk), dt(2026, 11, 9, 10, 30, tzinfo=msk), "ПКР", "laboratoryWork",
+                 ["Б-202"], "В-78", ["РИБО-02-23"], pair=1),
+        L.Lesson(dt(2026, 11, 10, 9, 0, tzinfo=msk), dt(2026, 11, 10, 10, 30, tzinfo=msk), "Другое", pair=1),
+    ])
     seen = {}
 
-    async def timetable(kind, query, days, date_from):
-        seen.update(kind=kind, days=days)
-        return {"kind": kind, "name": query, "from": date_from, "days": days, "events": []}
+    async def fetch(kind, query):
+        seen.update(kind=kind, query=query)
+        return tt
 
-    monkeypatch.setattr(S, "timetable", timetable)
-    text = await agent.run_tool("timetable", {"kind": "Преподаватель", "name": "Иванов", "date_from": "2030-01-07", "days": 99})
-    assert seen == {"kind": "teacher", "days": 14} and "Занятий нет" in text
+    monkeypatch.setattr(L, "fetch", fetch)
+    text = await agent.run_tool("timetable", {"kind": "Преподаватель", "name": "Коняшкин Г.В.", "date_from": "2026-11-09", "days": 1})
+    assert seen == {"kind": "teacher", "query": "Коняшкин Г.В."}
+    assert "09.11 Пн 1-я пара 09:00–10:30 — ПКР (лабораторная) — Б-202 (В-78) — группы: РИБО-02-23" in text
+    assert "Другое" not in text  # 10 ноября вне окна в 1 день
+    with pytest.raises(S.ServiceError):
+        await agent.run_tool("timetable", {"kind": "teacher", "name": "x", "date_from": "2026-11-09", "days": -1})
+
+
+def test_me_fills_teacher_for_my_questions():
+    me = "Коняшкин Георгий Викторович"
+    assert agent.with_me("find_reschedule_slots", {"lesson_date": "9 ноября"}, me)["teacher"] == me
+    assert agent.with_me("find_reschedule_slots", {"teacher": "Иванов"}, me)["teacher"] == "Иванов"
+    assert agent.with_me("timetable", {"date_from": "понедельник"}, me) == {"date_from": "понедельник", "kind": "teacher", "name": me}
+    assert agent.with_me("timetable", {"kind": "group", "date_from": "x"}, me) == {"kind": "group", "date_from": "x"}
+    assert agent.with_me("find_reschedule_slots", {}, None) == {}
+
+
+async def test_me_and_think_flow_through_answer():
+    llm = FakeLLM(call("find_reschedule_slots", lesson_date="2030-01-07", lesson_pairs=[1, 2]), Reply("ok"))
+    seen = {}
+
+    async def runner(name, args):
+        seen.update(args)
+        return "Найдено вариантов: 0"
+
+    await agent.answer(llm, [{"role": "user", "content": "перенеси мои 1 и 2 пары"}], me="Коняшкин Г. В.",
+                       tool_runner=runner, think=True)
+    assert seen["teacher"] == "Коняшкин Г. В." and llm.think is True
 
 
 async def test_tool_error_is_shown_to_model_not_raised():
@@ -138,15 +180,23 @@ def test_system_prompt_has_calendar_and_me():
 
 def test_formatters_are_compact():
     slots_text = agent.format_slots({
-        "teacher": "Иванов И. И.", "groups": ["ЭФБО-01-24"], "campus": "В-78", "period": "2030-01-07 — 2030-01-12",
-        "slots_found": 1, "note": "Согласуйте перенос.",
-        "slots": [{"date": "2030-01-08", "pair": 5, "time": "16:20–17:50", "free_rooms": ["А-9", "А-10"],
-                   "free_rooms_total": 12, "notes": ["соседняя 4-я пара преподавателя в корпусе С-20"]}],
+        "teacher": "Коняшкин Георгий Викторович", "moving_date": "9 ноября (Пн)",
+        "moving": "1-я пара ПКР (лабораторная), группы РИБО-02-23, Б-202 (В-78)", "groups": ["РИБО-02-23"],
+        "campus": "В-78", "pairs_in_a_row": 2, "period": "2026-11-09 — 2026-11-22", "slots_found": 1, "note": "Согласуйте перенос.",
+        "slots": [{"date": "2026-11-10", "pairs": [5, 6], "time": "16:20–19:30", "free_rooms": ["Б-202", "А-9"],
+                   "free_rooms_total": 57, "same_room": True, "notes": ["в этот день у преподавателя уже есть пары"]}],
     })
-    assert "08.01 Вт (2030-01-08), 5-я пара 16:20–17:50: А-9, А-10 (всего свободно 12) ⚠ соседняя" in slots_text
+    assert "Переносим: 9 ноября (Пн): 1-я пара ПКР" in slots_text and "пар подряд: 2" in slots_text
+    assert "1. 10.11 Вт (2026-11-10), 5–6 пара 16:20–19:30: Б-202, А-9 (та же аудитория свободна), всего свободно 57" in slots_text
     rooms = agent.format_free_rooms({"date": "2030-01-08", "from": "10:40", "to": "12:10", "campus": "Х",
                                      "total_free": 0, "free_rooms": [], "available_campuses": ["В-78"]})
     assert "Корпуса со свободными аудиториями: В-78" in rooms
+
+
+def test_prompt_has_examples_and_campus_rule():
+    p = agent.system_prompt("Коняшкин Г. В.")
+    assert 'lesson_date="9 ноября", lesson_pairs=[1, 2]' in p
+    assert "Корпус передавай, только если пользователь его назвал" in p
 
 
 # --- клиент Ollama ---

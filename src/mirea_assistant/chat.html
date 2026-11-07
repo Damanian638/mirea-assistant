@@ -21,6 +21,8 @@ details.settings[open] .panel{position:absolute;right:20px;margin-top:8px;backgr
 .panel label{display:block;margin-bottom:6px}
 .panel input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
 .panel p{color:var(--muted);margin:8px 0 0;font-size:13px}
+.panel label.check{display:flex;gap:8px;align-items:center;margin-top:14px}
+.panel label.check input{width:auto}
 main{flex:1;overflow-y:auto;padding:20px}
 .wrap{max-width:780px;margin:0 auto}
 .banner{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:15px}
@@ -58,6 +60,8 @@ button.send:disabled{opacity:.5;cursor:default}
       <label for="me">Ваше ФИО</label>
       <input id="me" placeholder="Иванов Иван Иванович" autocomplete="name">
       <p>Нужно для вопросов «какие у меня пары». Хранится только в этом браузере.</p>
+      <label class="check"><input type="checkbox" id="think"> Думать тщательнее</label>
+      <p>Точнее понимает сложные вопросы (перенос пар), но отвечает в 2–5 раз дольше.</p>
     </div>
   </details>
 </header>
@@ -68,7 +72,7 @@ button.send:disabled{opacity:.5;cursor:default}
     <p>Помощник работает на этом компьютере и берёт расписание с сайта МИРЭА. Вход в аккаунт не нужен.</p>
     <div class="chips">
       <button class="chip">Какие у меня пары на следующей неделе?</button>
-      <button class="chip">Куда перенести пару с группой ЭФБО-01-24 на следующей неделе, чтобы не было пересечений? Аудитория нужна на Вернадского 78</button>
+      <button class="chip">Куда перенести мои 1 и 2 пары в понедельник, чтобы было удобно и без пересечений?</button>
       <button class="chip">Какие аудитории свободны завтра на 3-й паре в В-78?</button>
       <button class="chip">Покажи расписание группы ЭФБО-01-24 на завтра</button>
     </div>
@@ -95,6 +99,8 @@ const store = {
 let history = store.get("history", []);
 $("me").value = store.get("me", "");
 $("me").addEventListener("input", () => store.set("me", $("me").value.trim()));
+$("think").checked = store.get("think", false);
+$("think").addEventListener("change", () => store.set("think", $("think").checked));
 
 const TOOL_NAMES = {timetable: "Расписание", free_rooms: "Свободные аудитории", find_reschedule_slots: "Поиск окон для переноса", search: "Поиск"};
 
@@ -155,14 +161,14 @@ async function ask(text) {
   history.push({role: "user", content: text});
   store.set("history", history);
   render();
-  const wait = bubble("bot", "Думаю… На обычном компьютере ответ может занять до минуты.");
+  const wait = bubble("bot", $("think").checked ? "Думаю тщательно… Это может занять несколько минут." : "Думаю… На обычном компьютере ответ может занять до минуты.");
   wait.querySelector(".bubble").classList.add("thinking");
   $("send").disabled = true;
   try {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.content})), me: $("me").value.trim()}),
+      body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.content})), me: $("me").value.trim(), think: $("think").checked}),
     });
     const data = await r.json();
     wait.remove();

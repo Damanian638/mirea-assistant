@@ -78,6 +78,13 @@ jobs:
             Write-Host "ОТВЕТ: $($r.answer)"
             Write-Host "ИНСТРУМЕНТЫ: $(($r.steps | ForEach-Object { $_.tool + '=' + $_.ok + ' ' + ($_.args | ConvertTo-Json -Compress) }) -join '; ')"
             if (-not $r.answer) { $problems += "пустой ответ" }
+
+            # сценарий преподавателя: перенос своих пар (группы и корпус программа находит сама)
+            $body = @{ me = "Коняшкин Георгий Викторович"; messages = @(@{ role = "user"; content = "Куда перенести мои 1 и 2 пары 9 ноября, чтобы было удобно и без пересечений?" }) } | ConvertTo-Json -Depth 5
+            $r = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/api/chat -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600
+            Write-Host "ОТВЕТ (перенос): $($r.answer)"
+            foreach ($st in $r.steps) { Write-Host "ШАГ: $($st.tool) ok=$($st.ok) $($st.args | ConvertTo-Json -Compress)"; Write-Host ($st.result.Substring(0, [Math]::Min(600, $st.result.Length))) }
+            if (-not $r.answer) { $problems += "пустой ответ на вопрос о переносе" }
           }
           if ($problems) { throw ($problems -join "; ") }
       - name: Журнал помощника

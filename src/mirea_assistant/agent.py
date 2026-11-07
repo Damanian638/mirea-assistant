@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from mirea_connect import services as S
 
-from . import dates, slots
+from . import dates, lessons, slots
 from .llm import LLMError, Ollama
 
 logger = logging.getLogger(__name__)
@@ -70,21 +70,24 @@ TOOLS = [
         "function": {
             "name": "find_reschedule_slots",
             "description": (
-                "Найти, куда перенести пару: пары, в которые свободны преподаватель и все группы, и свободные аудитории. "
-                "Используй для вопросов «куда перенести», «когда можно поставить отработку/консультацию»."
+                "Куда перенести пару или когда поставить отработку. Если пользователь говорит, КАКУЮ пару переносит "
+                "(дата и номер пары), передай lesson_date и lesson_pairs — программа сама найдёт группы, корпус, "
+                "подберёт столько пар подряд и отсортирует варианты по удобству. Группы и корпус в этом случае не передавай."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "teacher": {"type": "string", "description": "Преподаватель"},
-                    "groups": {"type": "array", "items": {"type": "string"}, "description": "Группы, у которых пара"},
-                    "date_from": {"type": "string", "description": "ГГГГ-ММ-ДД или слово («следующий понедельник»)"},
-                    "date_to": {"type": "string", "description": "ГГГГ-ММ-ДД или слово («следующая суббота»), не дальше 21 дня от date_from"},
-                    "campus": {"type": "string", "description": "Корпус, где нужна аудитория"},
-                    "pairs": {"type": "array", "items": {"type": "integer"}, "description": "Подходящие номера пар 1–7"},
-                    "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "Дни недели 1=пн … 6=сб"},
+                    "teacher": {"type": "string", "description": "Преподаватель; для «у меня» — ФИО пользователя"},
+                    "lesson_date": {"type": "string", "description": "Дата пары, которую переносим («9 ноября», «понедельник», ГГГГ-ММ-ДД)"},
+                    "lesson_pairs": {"type": "array", "items": {"type": "integer"}, "description": "Номера переносимых пар в тот день, например [1, 2]"},
+                    "date_from": {"type": "string", "description": "С какой даты искать новое время (если пользователь назвал период)"},
+                    "date_to": {"type": "string", "description": "По какую дату искать (не дальше 21 дня от date_from)"},
+                    "allowed_pairs": {"type": "array", "items": {"type": "integer"}, "description": "Только если пользователь сам ограничил НОВОЕ время номерами пар («можно только на 3–5 паре»)"},
+                    "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "Только если пользователь ограничил дни недели: 1=пн … 6=сб"},
+                    "groups": {"type": "array", "items": {"type": "string"}, "description": "Группы — только если переносимая пара не указана (отработка для конкретных групп)"},
+                    "campus": {"type": "string", "description": "Корпус — только если пользователь его назвал"},
                 },
-                "required": ["teacher", "date_from"],
+                "required": ["teacher"],
             },
         },
     },
@@ -155,20 +158,27 @@ def _fmt_day(iso: str) -> str:
     return f"{dt.strftime('%d.%m')} {slots.WEEKDAYS[dt.weekday()]}"
 
 
-def format_timetable(data: dict) -> str:
-    events = data["events"]
-    start = f"{data['from']} ({_fmt_day(data['from'])})" if data.get("from") else "всё доступное"
-    head = f"Расписание: {data['name']} ({data['kind']}), с {start} на {data.get('days')} дн."
-    if not events:
+def format_lessons(tt: lessons.Timetable, start: datetime, days: int) -> str:
+    end = start + timedelta(days=days)
+    items = [x for x in tt.lessons if start <= x.start < end]
+    head = f"Расписание: {tt.name} ({tt.kind}), с {_fmt_day(start.date().isoformat())} {start.date().isoformat()} на {days} дн."
+    if not items:
         return head + "\nЗанятий нет."
     lines = [head]
-    for e in events[:60]:
-        loc = f" — {e['location']}" if e.get("location") else ""
-        extra = f" [{e['description'][:80]}]" if e.get("description") else ""
-        end = e["end"][11:16] if e.get("end") else "?"
-        lines.append(f"{_fmt_day(e['start'])} {e['start'][11:16]}–{end} {e['summary']}{loc}{extra}")
-    if len(events) > 60:
-        lines.append(f"… и ещё {len(events) - 60} занятий (сузьте диапазон дат)")
+    for x in items[:60]:
+        pair = slots.pair_of(x)
+        parts = [f"{_fmt_day(x.day.isoformat())} {pair}-я пара {x.start.strftime('%H:%M')}–{x.end.strftime('%H:%M')}" if pair
+                 else f"{_fmt_day(x.day.isoformat())} {x.start.strftime('%H:%M')}–{x.end.strftime('%H:%M')}",
+                 x.subject + (f" ({x.kind_ru})" if x.kind_ru else "")]
+        if x.rooms:
+            parts.append(x.location())
+        if x.groups and tt.kind != "group":
+            parts.append("группы: " + ", ".join(x.groups))
+        if x.teachers and tt.kind != "teacher":
+            parts.append("преподаватель: " + ", ".join(x.teachers))
+        lines.append(" — ".join(parts))
+    if len(items) > 60:
+        lines.append(f"… и ещё {len(items) - 60} занятий (сузьте диапазон дат)")
     return "\n".join(lines)
 
 
@@ -186,18 +196,25 @@ def format_free_rooms(data: dict) -> str:
 
 
 def format_slots(data: dict) -> str:
-    head = (f"Перенос: преподаватель {data['teacher']}, группы: {', '.join(data['groups']) or 'не указаны'}, "
-            f"период {data['period']}, корпус {data.get('campus') or 'любой'}. Найдено вариантов: {data['slots_found']}.")
+    lines = []
+    if data.get("moving"):
+        lines.append(f"Переносим: {data['moving_date']}: {data['moving']}.")
+    lines.append(f"Преподаватель {data['teacher']}; группы: {', '.join(data['groups']) or 'не указаны'}; "
+                 f"корпус {data.get('campus') or 'любой'}; пар подряд: {data['pairs_in_a_row']}; "
+                 f"период поиска {data['period']}. Найдено вариантов: {data['slots_found']}.")
     if not data["slots"]:
-        return head + "\nСвободных для всех пар в этот период нет — предложите расширить период или убрать ограничения."
-    lines = [head]
-    for s in data["slots"][:15]:
-        rooms = ", ".join(s["free_rooms"]) if s["free_rooms"] else "аудитории не проверялись"
-        total = f" (всего свободно {s['free_rooms_total']})" if s.get("free_rooms_total") else ""
-        notes = f" ⚠ {'; '.join(s['notes'])}" if s["notes"] else ""
-        lines.append(f"{_fmt_day(s['date'])} ({s['date']}), {s['pair']}-я пара {s['time']}: {rooms}{total}{notes}")
-    if len(data["slots"]) > 15:
-        lines.append(f"… и ещё {len(data['slots']) - 15} вариантов")
+        lines.append("Подходящего времени, когда свободны все, нет — предложите расширить период поиска.")
+        return "\n".join(lines)
+    lines.append("Варианты, от самых удобных:")
+    for i, sl in enumerate(data["slots"][:10], 1):
+        pairs = "–".join(map(str, (sl["pairs"][0], sl["pairs"][-1]))) if len(sl["pairs"]) > 1 else str(sl["pairs"][0])
+        rooms = ", ".join(sl["free_rooms"]) if sl["free_rooms"] else "аудитории не проверялись"
+        same = " (та же аудитория свободна)" if sl.get("same_room") else ""
+        total = f", всего свободно {sl['free_rooms_total']}" if sl.get("free_rooms_total") else ""
+        notes = f" — {'; '.join(sl['notes'])}" if sl["notes"] else ""
+        lines.append(f"{i}. {_fmt_day(sl['date'])} ({sl['date']}), {pairs} пара {sl['time']}: {rooms}{same}{total}{notes}")
+    if len(data["slots"]) > 10:
+        lines.append(f"… и ещё {len(data['slots']) - 10} вариантов")
     lines.append(data["note"])
     return "\n".join(lines)
 
@@ -218,9 +235,11 @@ def _date(v: Any) -> str | None:
 async def run_tool(name: str, args: dict) -> str:
     if name == "timetable":
         days = int(args.get("days") or 7)
-        data = await S.timetable(_kind(args.get("kind")), _str(args.get("name")) or "", max(1, min(days, 14)),
-                                 _date(args.get("date_from")))
-        return format_timetable(data)
+        if days < 1:
+            raise S.ServiceError("days должно быть от 1 до 14.")
+        start = S._start_of(_date(args.get("date_from")))
+        tt = await lessons.fetch(_kind(args.get("kind")), _str(args.get("name")) or "")
+        return format_lessons(tt, start, min(days, 14))
     if name == "free_rooms":
         data = await S.free_rooms(_list(args.get("rooms")) or None, _date(args.get("date")),
                                   _str(args.get("start_time")) or "", _str(args.get("end_time")) or "",
@@ -229,17 +248,30 @@ async def run_tool(name: str, args: dict) -> str:
     if name == "find_reschedule_slots":
         data = await slots.find_slots(
             _str(args.get("teacher")) or "",
-            _list(args.get("groups")),
-            _date(args.get("date_from")),
-            _date(args.get("date_to")),
-            _str(args.get("campus")),
-            _ints(args.get("pairs")),
-            _ints(args.get("weekdays"), _WEEKDAYS),
+            lesson_date=_date(args.get("lesson_date")),
+            lesson_pairs=_ints(args.get("lesson_pairs")),
+            groups=_list(args.get("groups")),
+            date_from=_date(args.get("date_from")),
+            date_to=_date(args.get("date_to")),
+            campus=_str(args.get("campus")),
+            allowed_pairs=_ints(args.get("allowed_pairs") or args.get("pairs")),
+            weekdays=_ints(args.get("weekdays"), _WEEKDAYS),
         )
         return format_slots(data)
     if name == "search":
         return format_search(await S.search(_kind(args.get("kind")), _str(args.get("query")) or ""))
     raise S.ServiceError(f"Неизвестный инструмент {name}.")
+
+
+def with_me(name: str, args: dict, me: str | None) -> dict:
+    """«У меня» без ФИО: подставить преподавателя из настроек."""
+    if not me:
+        return args
+    if name == "find_reschedule_slots" and not _str(args.get("teacher")):
+        return {**args, "teacher": me}
+    if name == "timetable" and not _str(args.get("name")) and _KINDS.get((_str(args.get("kind")) or "teacher").casefold()) == "teacher":
+        return {**args, "kind": "teacher", "name": me}
+    return args
 
 
 def fix_dates(name: str, args: dict, user_dates: list[str]) -> dict:
@@ -285,11 +317,20 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
 - Если инструмент вернул ОШИБКУ со списком вариантов — покажи варианты и спроси, кого/что имели в виду.
 - Если не хватает данных (кто, какая группа, когда) — задай один уточняющий вопрос.
 - Для переноса пары и поиска времени для отработки используй find_reschedule_slots. Напомни, что перенос согласуется с учебным отделом.
+- Корпус передавай, только если пользователь его назвал.
+- Группы, предметы и аудитории называй только из результатов инструментов, полностью («РИБО-02-23»).
 - Свободная по расписанию аудитория может быть физически закрыта — упомяни это, если предлагаешь аудиторию.
 - {who}
 
 Время московское. Звонки: {bells}.
 Корпуса: «Вернадского 78» = В-78, «Вернадского 86» = В-86, «Стромынка» = С-20, «Малая Пироговская» = МП-1, «Соколиная гора» = СГ-22.
+
+Примеры (как вызывать инструменты):
+- «Куда перенести 1 и 2 пару у меня 9 ноября?» → find_reschedule_slots(teacher=<ФИО пользователя>, lesson_date="9 ноября", lesson_pairs=[1, 2])
+- «…проверь с 16 по 22 ноября» → то же + date_from="16 ноября", date_to="22 ноября"
+- «Когда поставить отработку для ЭФБО-01-24 на этой неделе?» → find_reschedule_slots(teacher=…, groups=["ЭФБО-01-24"], date_from="сегодня")
+- «У какой группы у меня пары в понедельник?» → timetable(kind="teacher", name=<ФИО>, date_from="понедельник", days=1)
+- «Свободные аудитории завтра на 3 паре» → free_rooms(date="завтра", start_time="12:40", end_time="14:10")
 
 Календарь:
 """ + "\n".join(calendar_lines(now))
@@ -318,7 +359,8 @@ class Answer:
 ToolRunner = Callable[[str, dict], Awaitable[str]]
 
 
-async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_runner: ToolRunner = run_tool) -> Answer:
+async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_runner: ToolRunner = run_tool,
+                 think: bool = False) -> Answer:
     """history — сообщения чата [{role: user|assistant, content}], последнее — вопрос пользователя."""
     clean = [{"role": m["role"], "content": str(m.get("content", ""))[:4000]}
              for m in history[-12:] if m.get("role") in ("user", "assistant")]
@@ -330,13 +372,13 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
     user_dates = dates.mentioned(clean[-1]["content"], datetime.now(slots.MSK))
 
     for _ in range(MAX_ROUNDS):
-        reply = await llm.chat(messages, TOOLS)
+        reply = await llm.chat(messages, TOOLS, think=think)
         if not reply.tool_calls:
             return Answer(reply.content or "Не получилось сформулировать ответ. Переформулируйте вопрос.", steps)
         messages.append({"role": "assistant", "content": reply.content,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in reply.tool_calls]})
         for call in reply.tool_calls:
-            call.arguments = fix_dates(call.name, call.arguments, user_dates)
+            call.arguments = fix_dates(call.name, with_me(call.name, call.arguments, me), user_dates)
             key = call.name + json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
             if key in seen:  # маленькие модели иногда зацикливаются на одном вызове
                 result, ok = "Этот запрос уже выполнен, результат выше. Ответь пользователю.", True
@@ -353,5 +395,5 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
 
     # лимит раундов: просим ответить по уже полученным данным
     messages.append({"role": "user", "content": "Ответь на исходный вопрос по уже полученным данным, без новых запросов."})
-    final = await llm.chat(messages)
+    final = await llm.chat(messages, think=think)
     return Answer(final.content or "Не получилось получить ответ. Уточните вопрос.", steps)
