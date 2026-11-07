@@ -101,6 +101,9 @@ def test_me_fills_teacher_for_my_questions():
     assert agent.with_me("timetable", {"date_from": "понедельник"}, me) == {"date_from": "понедельник", "kind": "teacher", "name": me}
     assert agent.with_me("timetable", {"kind": "group", "date_from": "x"}, me) == {"kind": "group", "date_from": "x"}
     assert agent.with_me("find_reschedule_slots", {}, None) == {}
+    # прогон на Windows: маленькая модель скопировала заготовку из примера
+    for placeholder in ("<ФИО пользователя>", "<ФИО>", "я", "Мои", "ФИО пользователя"):
+        assert agent.with_me("find_reschedule_slots", {"teacher": placeholder}, me)["teacher"] == me
 
 
 async def test_me_and_think_flow_through_answer():
@@ -195,7 +198,8 @@ def test_formatters_are_compact():
 
 def test_prompt_has_examples_and_campus_rule():
     p = agent.system_prompt("Коняшкин Г. В.")
-    assert 'lesson_date="9 ноября", lesson_pairs=[1, 2]' in p
+    assert 'teacher="Коняшкин Г. В.", lesson_date="9 ноября", lesson_pairs=[1, 2]' in p
+    assert "<ФИО" not in p and "{t}" not in p
     assert "Корпус передавай, только если пользователь его назвал" in p
 
 

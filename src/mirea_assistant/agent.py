@@ -263,13 +263,24 @@ async def run_tool(name: str, args: dict) -> str:
     raise S.ServiceError(f"Неизвестный инструмент {name}.")
 
 
+_ME_WORDS = {"я", "мне", "меня", "мой", "мои", "моё", "мое", "моих", "me", "user", "пользователь"}
+
+
+def _means_me(value: Any) -> bool:
+    """Пусто, «я/мои» или заготовка из примера («<ФИО пользователя>») — значит, речь о пользователе.
+
+    Прогон на Windows: модель qwen3:0.6b передала teacher="<ФИО пользователя>" дословно из примера."""
+    v = (_str(value) or "").casefold()
+    return not v or v in _ME_WORDS or "<" in v or "фио" in v or "пользовател" in v
+
+
 def with_me(name: str, args: dict, me: str | None) -> dict:
     """«У меня» без ФИО: подставить преподавателя из настроек."""
     if not me:
         return args
-    if name == "find_reschedule_slots" and not _str(args.get("teacher")):
+    if name == "find_reschedule_slots" and _means_me(args.get("teacher")):
         return {**args, "teacher": me}
-    if name == "timetable" and not _str(args.get("name")) and _KINDS.get((_str(args.get("kind")) or "teacher").casefold()) == "teacher":
+    if name == "timetable" and _means_me(args.get("name")) and _KINDS.get((_str(args.get("kind")) or "teacher").casefold()) == "teacher":
         return {**args, "kind": "teacher", "name": me}
     return args
 
@@ -309,6 +320,7 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
     bells = "; ".join(f"{n}-я {a}–{b}" for n, (a, b) in slots.BELLS.items())
     who = (f"Пользователь — преподаватель {me}. «Мои пары», «у меня» — это расписание преподавателя {me}."
            if me else "Если пользователь спрашивает про «мои пары», а ФИО неизвестно — спроси ФИО.")
+    t = me or "Иванов Иван Иванович"
     return f"""Ты — помощник преподавателя РТУ МИРЭА. Отвечай по-русски, коротко и по делу, списком, если вариантов несколько.
 
 Правила:
@@ -326,10 +338,10 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
 Корпуса: «Вернадского 78» = В-78, «Вернадского 86» = В-86, «Стромынка» = С-20, «Малая Пироговская» = МП-1, «Соколиная гора» = СГ-22.
 
 Примеры (как вызывать инструменты):
-- «Куда перенести 1 и 2 пару у меня 9 ноября?» → find_reschedule_slots(teacher=<ФИО пользователя>, lesson_date="9 ноября", lesson_pairs=[1, 2])
+- «Куда перенести 1 и 2 пару у меня 9 ноября?» → find_reschedule_slots(teacher="{t}", lesson_date="9 ноября", lesson_pairs=[1, 2])
 - «…проверь с 16 по 22 ноября» → то же + date_from="16 ноября", date_to="22 ноября"
-- «Когда поставить отработку для ЭФБО-01-24 на этой неделе?» → find_reschedule_slots(teacher=…, groups=["ЭФБО-01-24"], date_from="сегодня")
-- «У какой группы у меня пары в понедельник?» → timetable(kind="teacher", name=<ФИО>, date_from="понедельник", days=1)
+- «Когда поставить отработку для ЭФБО-01-24 на этой неделе?» → find_reschedule_slots(teacher="{t}", groups=["ЭФБО-01-24"], date_from="сегодня")
+- «У какой группы у меня пары в понедельник?» → timetable(kind="teacher", name="{t}", date_from="понедельник", days=1)
 - «Свободные аудитории завтра на 3 паре» → free_rooms(date="завтра", start_time="12:40", end_time="14:10")
 
 Календарь:
