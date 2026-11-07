@@ -7,7 +7,7 @@ on:
     inputs:
       models:
         description: Модели через запятую
-        default: qwen3:4b,qwen3:8b
+        default: qwen3:4b-instruct-2507-q4_K_M,qwen3:8b
       think:
         description: Режим «Думать тщательнее»
         type: boolean
@@ -30,7 +30,7 @@ jobs:
       - id: m
         shell: python
         env:
-          MODELS: ${{ inputs.models || 'qwen3:4b,qwen3:8b' }}
+          MODELS: ${{ inputs.models || 'qwen3:4b-instruct-2507-q4_K_M,qwen3:8b' }}
         run: |
           import json, os
           models = [m.strip() for m in os.environ["MODELS"].split(",") if m.strip()]

@@ -90,7 +90,8 @@ def test_shutdown_from_own_page(app):
 # --- настройки и запуск ---
 
 
-@pytest.mark.parametrize("ram, model", [(32, "qwen3:8b"), (15.8, "qwen3:8b"), (8, "qwen3:4b"), (7.9, "qwen3:4b"), (4, "qwen3:1.7b")])
+@pytest.mark.parametrize("ram, model", [(32, "qwen3:8b"), (15.8, "qwen3:8b"), (8, "qwen3:4b-instruct-2507-q4_K_M"),
+                                       (7.9, "qwen3:4b-instruct-2507-q4_K_M"), (4, "qwen3:1.7b")])
 def test_model_for_ram(ram, model):
     assert config.model_for_ram(ram) == model
 

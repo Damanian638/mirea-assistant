@@ -4,7 +4,7 @@
 параметрами (после тех же исправлений, что делает программа: ФИО из настроек, дата
 из слов пользователя). Сеть МИРЭА не используется — вызов перехватывается.
 
-    python -m mirea_assistant.evaluate evals/cases.json --model qwen3:4b [--think] [--report report.md]
+    python -m mirea_assistant.evaluate evals/cases.json --model qwen3:8b [--think] [--report report.md]
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ async def main_async(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m mirea_assistant.evaluate")
     p.add_argument("cases", nargs="?", default="evals/cases.json")
-    p.add_argument("--model", default=os.environ.get("MIREA_ASSISTANT_MODEL", "qwen3:4b"))
+    p.add_argument("--model", default=os.environ.get("MIREA_ASSISTANT_MODEL", "qwen3:8b"))
     p.add_argument("--think", action="store_true", help="режим «Думать тщательнее»")
     p.add_argument("--only", help="id вопросов через запятую")
     p.add_argument("--report", help="записать отчёт в markdown")

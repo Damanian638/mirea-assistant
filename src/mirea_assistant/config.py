@@ -7,7 +7,10 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-DEFAULT_MODEL = "qwen3:4b"
+# qwen3:4b в Ollama — это версия 2507 «с рассуждениями», которые нельзя выключить: на экзамене
+# она не отвечала и за 5 минут. Инструктивная 4b — 25 из 28 за ~17 с, qwen3:8b — 28 из 28 за ~25 с
+# (evals/cases.json, процессор GitHub Actions на 4 ядра).
+DEFAULT_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_PORT = 8765
 
 
@@ -46,5 +49,5 @@ def model_for_ram(total_gb: float) -> str:
     if total_gb >= 15:
         return "qwen3:8b"
     if total_gb >= 7:
-        return "qwen3:4b"
+        return DEFAULT_MODEL
     return "qwen3:1.7b"
