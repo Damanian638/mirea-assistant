@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Помощник МИРЭА</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#16181d;--muted:#5f6672;--line:#dde1e7;--accent:#1d4ed8;--accent-fg:#fff;--me:#e8eefc;--warn:#9a3412;--warnbg:#fff4e5;--err:#b42318;--errbg:#fdecea;--ok:#15803d}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--fg:#e8eaed;--muted:#9aa1ad;--line:#2a2f37;--accent:#6b93ff;--accent-fg:#0b0d10;--me:#1d2740;--warn:#fdba74;--warnbg:#3a2614;--err:#ff8a80;--errbg:#3a1d1b;--ok:#4ade80}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:18px;margin:0;flex:1}
+.pill{font-size:13px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.pill.ok{color:var(--ok)}.pill.bad{color:var(--err)}
+details.settings{font-size:14px}
+details.settings summary{cursor:pointer;color:var(--muted);list-style:none}
+details.settings[open] .panel{position:absolute;right:20px;margin-top:8px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;width:300px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:5}
+.panel label{display:block;margin-bottom:6px}
+.panel input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+.panel p{color:var(--muted);margin:8px 0 0;font-size:13px}
+main{flex:1;overflow-y:auto;padding:20px}
+.wrap{max-width:780px;margin:0 auto}
+.banner{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:15px}
+.hello{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+.hello h2{margin:0 0 6px;font-size:18px}
+.hello p{margin:0 0 12px;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:999px;padding:6px 12px;font:inherit;font-size:14px;cursor:pointer;text-align:left}
+.chip:hover{border-color:var(--accent)}
+.msg{margin:12px 0;display:flex}
+.msg .bubble{padding:10px 14px;border-radius:12px;max-width:92%;white-space:pre-wrap;word-wrap:break-word}
+.msg.user{justify-content:flex-end}
+.msg.user .bubble{background:var(--me)}
+.msg.bot .bubble{background:var(--card);border:1px solid var(--line)}
+.msg.err .bubble{background:var(--errbg);color:var(--err)}
+.steps{margin-top:8px;font-size:13px;color:var(--muted)}
+.steps summary{cursor:pointer}
+.steps pre{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0;font-size:12px;max-height:240px;overflow:auto}
+.thinking{color:var(--muted);font-style:italic}
+footer{border-top:1px solid var(--line);background:var(--card);padding:12px 20px}
+form{max-width:780px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+textarea{flex:1;resize:none;min-height:46px;max-height:180px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit}
+button.send{padding:11px 18px;border:0;border-radius:10px;background:var(--accent);color:var(--accent-fg);font:inherit;font-weight:600;cursor:pointer}
+button.send:disabled{opacity:.5;cursor:default}
+.tools{max-width:780px;margin:8px auto 0;display:flex;gap:16px;font-size:13px}
+.link{background:none;border:0;color:var(--muted);cursor:pointer;padding:0;font:inherit;text-decoration:underline}
+</style>
+</head>
+<body>
+<header>
+  <h1>Помощник МИРЭА</h1>
+  <span id="status" class="pill">проверяю…</span>
+  <details class="settings"><summary>⚙ Настройки</summary>
+    <div class="panel">
+      <label for="me">Ваше ФИО</label>
+      <input id="me" placeholder="Иванов Иван Иванович" autocomplete="name">
+      <p>Нужно для вопросов «какие у меня пары». Хранится только в этом браузере.</p>
+    </div>
+  </details>
+</header>
+<main id="scroll"><div class="wrap">
+  <div id="banner" class="banner" hidden></div>
+  <div class="hello" id="hello">
+    <h2>Что можно спросить</h2>
+    <p>Помощник работает на этом компьютере и берёт расписание с сайта МИРЭА. Вход в аккаунт не нужен.</p>
+    <div class="chips">
+      <button class="chip">Какие у меня пары на следующей неделе?</button>
+      <button class="chip">Куда перенести пару с группой ЭФБО-01-24 на следующей неделе, чтобы не было пересечений? Аудитория нужна на Вернадского 78</button>
+      <button class="chip">Какие аудитории свободны завтра на 3-й паре в В-78?</button>
+      <button class="chip">Покажи расписание группы ЭФБО-01-24 на завтра</button>
+    </div>
+  </div>
+  <div id="log"></div>
+</div></main>
+<footer>
+  <form id="form">
+    <textarea id="q" rows="1" placeholder="Напишите вопрос… (Enter — отправить, Shift+Enter — новая строка)" required></textarea>
+    <button class="send" id="send">Спросить</button>
+  </form>
+  <div class="tools">
+    <button class="link" id="clear" type="button">Очистить разговор</button>
+    <button class="link" id="off" type="button">Выключить помощника</button>
+  </div>
+</footer>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+let history = store.get("history", []);
+$("me").value = store.get("me", "");
+$("me").addEventListener("input", () => store.set("me", $("me").value.trim()));
+
+const TOOL_NAMES = {timetable: "Расписание", free_rooms: "Свободные аудитории", find_reschedule_slots: "Поиск окон для переноса", search: "Поиск"};
+
+function bubble(role, text, steps) {
+  const row = document.createElement("div");
+  row.className = "msg " + role;
+  const b = document.createElement("div");
+  b.className = "bubble";
+  b.textContent = text;
+  if (steps && steps.length) {
+    const d = document.createElement("details");
+    d.className = "steps";
+    const s = document.createElement("summary");
+    s.textContent = "Что я проверил (" + steps.map(x => TOOL_NAMES[x.tool] || x.tool).join(", ") + ")";
+    d.appendChild(s);
+    for (const st of steps) {
+      const pre = document.createElement("pre");
+      pre.textContent = (st.ok ? "" : "⚠ ") + (TOOL_NAMES[st.tool] || st.tool) + " " + JSON.stringify(st.args) + "\n" + st.result;
+      d.appendChild(pre);
+    }
+    b.appendChild(d);
+  }
+  row.appendChild(b);
+  $("log").appendChild(row);
+  $("scroll").scrollTop = $("scroll").scrollHeight;
+  return row;
+}
+
+function render() {
+  $("log").textContent = "";
+  for (const m of history) bubble(m.role === "user" ? "user" : "bot", m.content, m.steps);
+  $("hello").hidden = history.length > 0;
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const s = await r.json();
+    const pill = $("status"), banner = $("banner");
+    if (!s.ollama) {
+      pill.textContent = "ИИ не запущен"; pill.className = "pill bad";
+      banner.textContent = "Не запущена программа Ollama, в которой работает ИИ. Откройте Ollama из меню «Пуск» и подождите минуту.";
+      banner.hidden = false;
+    } else if (!s.model_ready) {
+      pill.textContent = "модель не скачана"; pill.className = "pill bad";
+      banner.textContent = "Модель " + s.model + " ещё не скачана. Запустите установку ещё раз или выполните в PowerShell: ollama pull " + s.model;
+      banner.hidden = false;
+    } else {
+      pill.textContent = "готов · " + s.model; pill.className = "pill ok";
+      banner.hidden = true;
+    }
+  } catch (e) {
+    $("status").textContent = "помощник выключен"; $("status").className = "pill bad";
+  }
+}
+
+async function ask(text) {
+  history.push({role: "user", content: text});
+  store.set("history", history);
+  render();
+  const wait = bubble("bot", "Думаю… На обычном компьютере ответ может занять до минуты.");
+  wait.querySelector(".bubble").classList.add("thinking");
+  $("send").disabled = true;
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.content})), me: $("me").value.trim()}),
+    });
+    const data = await r.json();
+    wait.remove();
+    if (!r.ok) {
+      bubble("err", data.error || "Ошибка. Повторите вопрос.");
+      history.pop();  // вопрос можно отправить снова
+      store.set("history", history);
+      return;
+    }
+    history.push({role: "assistant", content: data.answer, steps: data.steps});
+    store.set("history", history.slice(-40));
+    render();
+  } catch (e) {
+    wait.remove();
+    bubble("err", "Помощник не отвечает. Возможно, он выключен — запустите его ярлыком на рабочем столе.");
+    history.pop();
+  } finally {
+    $("send").disabled = false;
+    refreshStatus();
+  }
+}
+
+$("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = $("q").value.trim();
+  if (!text || $("send").disabled) return;
+  $("q").value = "";
+  ask(text);
+});
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); }
+});
+$("q").addEventListener("input", () => { const t = $("q"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; });
+document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => { $("q").value = c.textContent; $("q").focus(); }));
+$("clear").addEventListener("click", () => { history = []; store.set("history", history); render(); });
+$("off").addEventListener("click", async () => {
+  try { await fetch("/api/shutdown", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); } catch (e) {}
+  document.body.innerHTML = "<main><div class='wrap'><div class='hello'><h2>Помощник выключен</h2><p>Чтобы снова открыть, используйте ярлык «Помощник МИРЭА» на рабочем столе.</p></div></div></main>";
+});
+render();
+refreshStatus();
+setInterval(refreshStatus, 15000);
+</script>
+</body>
+</html>

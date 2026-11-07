@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mirea-assistant"
+version = "0.1.0"
+description = "Помощник преподавателя РТУ МИРЭА с локальным ИИ: расписание, свободные аудитории, перенос пар"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Damanian638" }]
+dependencies = [
+    # Данные МИРЭА берутся из MIREA Connect; коммит закреплён, обновлять осознанно.
+    "mirea-connect @ https://github.com/Damanian638/mirea-connect/archive/7c13da6fd85e238022d30d52a33cd9d5e37e3b95.zip",
+    "httpx>=0.25",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "respx>=0.20", "ruff>=0.5"]
+
+[project.scripts]
+mirea-assistant = "mirea_assistant.cli:main"
+
+[project.gui-scripts]
+# Ярлык на рабочем столе запускает эту версию: без чёрного окна консоли (Windows).
+mirea-assistant-app = "mirea_assistant.cli:main_gui"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mirea_assistant"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E741"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
