@@ -12,7 +12,7 @@ license = "MIT"
 authors = [{ name = "Damanian638" }]
 dependencies = [
     # Данные МИРЭА берутся из MIREA Connect; коммит закреплён, обновлять осознанно.
-    "mirea-connect @ https://github.com/Damanian638/mirea-connect/archive/7c13da6fd85e238022d30d52a33cd9d5e37e3b95.zip",
+    "mirea-connect @ https://github.com/Damanian638/mirea-connect/archive/dca883c3092ce7b8c7573241246d6b9956775bea.zip",
     "httpx>=0.25",
     "starlette>=0.37",
     "uvicorn>=0.30",
