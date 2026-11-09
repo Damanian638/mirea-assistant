@@ -58,6 +58,7 @@ async def test_argument_normalisation_for_small_models(monkeypatch):
 
     monkeypatch.setattr(agent.slots, "find_slots", find_slots)
     monkeypatch.setattr(agent, "_date", lambda v: v)
+    monkeypatch.setattr(agent, "_day", lambda v: v)
     await agent.run_tool("find_reschedule_slots", {"teacher": " Иванов ", "groups": "ЭФБО-01-24; ЭФБО-02-24",
                                                    "lesson_date": "9 ноября", "lesson_pairs": ["1", 2.0],
                                                    "pairs": ["5", 6], "weekdays": ["Вт", "4"]})
@@ -329,9 +330,14 @@ def test_lesson_date_corrected_when_user_named_one_day(monkeypatch):
     # «перенеси мою 1 пару в понедельник», а модель передала дату среды
     fixed = agent.fix_dates("find_reschedule_slots", {"lesson_date": "2026-11-11", "lesson_pairs": [1]}, ["2026-11-09"])
     assert fixed["lesson_date"] == "2026-11-09"
-    # названный день — новое время, а не дата пары: не трогаем
+    # дата пары из прошлого вопроса, а названный сейчас день — новое время: не трогаем
     args = {"lesson_date": "2026-11-05", "date_from": "2026-11-09"}
-    assert agent.fix_dates("find_reschedule_slots", args, ["2026-11-09"]) == args
+    assert agent.fix_dates("find_reschedule_slots", args, ["2026-11-09"], ["2026-11-05", "2026-11-09"]) == args
+    # экзамен 09.11: «перенеси мою первую пару в четверг» — модель взяла дату пары = сегодня (не названа),
+    # а четверг сделала новым временем
+    args = {"lesson_date": "2026-11-07", "date_to": "2026-11-12", "lesson_pairs": [1]}
+    assert agent.fix_dates("find_reschedule_slots", args, ["2026-11-12"]) == {"lesson_date": "2026-11-12",
+                                                                               "lesson_pairs": [1]}
 
 
 SCREENSHOT_Q = ("Куда перенести мои 1 и 2 пары в понедельник, чтобы было удобно и без пересечений? "
@@ -410,3 +416,168 @@ def test_period_words_not_inside_weekday():
     # срок словами без даты («на этой неделе») сохраняет период модели
     args = {"teacher": "x", "date_from": "2026-11-10", "date_to": "2026-11-14"}
     assert agent.drop_invented_period("find_reschedule_slots", args, [], "отработка на этой неделе") == args
+
+
+# --- прогон 09.11 (26 новых вопросов на qwen3:8b): программа не верит выдуманному ---
+
+
+def _eff(name, args, text, said=None, previous=None, today=datetime(2026, 11, 9, 8, 45)):
+    from mirea_assistant import dates as D
+
+    now = today.replace(tzinfo=agent.slots.MSK)
+    return agent.effective_args(name, args, "Коняшкин Георгий Викторович", D.mentioned(text, now),
+                                D.mentioned_pairs(text), text, said, previous)
+
+
+@pytest.mark.parametrize(
+    "text, given, expected",
+    [
+        ("Перенеси пару 10 ноября на 5 паре на любой день следующей недели, кроме субботы", [1], [5]),
+        ("Мне нужно перенести лабораторную в среду, куда можно?", [1], None),  # пару не называли — не выдумываем
+        ("Куда перенести мои 1 и 2 пары 9 ноября?", [1, 2], [1, 2]),
+        ("перенести 1 пару на 3 пару в четверг", [1], [1]),
+    ],
+)
+def test_invented_lesson_pairs(text, given, expected):
+    out = _eff("find_reschedule_slots", {"teacher": "x", "lesson_date": "среда", "lesson_pairs": given}, text)
+    assert out.get("lesson_pairs") == expected
+
+
+def test_follow_up_keeps_pairs_from_earlier_question():
+    said = "Куда перенести мою 1 пару в четверг?\nа если только на 3 паре?"
+    out = _eff("find_reschedule_slots",
+               {"teacher": "x", "lesson_date": "четверг", "lesson_pairs": [1], "allowed_pairs": [3]},
+               "а если только на 3 паре?", said)
+    assert out["lesson_pairs"] == [1] and out["allowed_pairs"] == [3]
+
+
+def test_all_pairs_of_the_day():
+    out = _eff("find_reschedule_slots",
+               {"teacher": "x", "lesson_date": "завтра", "lesson_pairs": [1, 2, 3, 4, 5, 6, 7]},
+               "Заболел, перенеси все мои пары завтра")
+    assert out["all_day"] is True and "lesson_pairs" not in out
+
+
+def test_invented_rooms_and_groups_dropped():
+    out = _eff("free_rooms", {"date": "завтра", "pair": 3, "rooms": ["А-214", "В-78-105"]},
+               "Нужна аудитория на 30 человек завтра на 3 паре")
+    assert "rooms" not in out and out["start_time"] == "12:40"
+    out = _eff("free_rooms", {"date": "среда", "rooms": ["Б-202", "В-317", "А-1"]},
+               "Свободны ли Б-202 и В-317 в среду?")
+    assert out["rooms"] == ["Б-202", "В-317"]
+    out = _eff("find_reschedule_slots",
+               {"teacher": "x", "lesson_date": "16 ноября", "groups": ["РИБО-02-23", "ЭФБО-01-24"]},
+               "Куда сдвинуть мою пару с РИБО-02-23 16 ноября?")
+    assert out["groups"] == ["РИБО-02-23"]
+
+
+@pytest.mark.parametrize(
+    "text, pairs",
+    [("Хочу перенести 1 и 2 пары 16.11 на утро другого дня", [1, 2]), ("перенеси на вечер", [5, 6, 7]),
+     ("лучше после обеда", [3, 4]), ("перенеси пару 16.11", None)],
+)
+def test_time_of_day_limits_new_time(text, pairs):
+    assert _eff("find_reschedule_slots", {"teacher": "x"}, text).get("allowed_pairs") == pairs
+
+
+def test_now_means_current_pair(monkeypatch):
+    monkeypatch.setattr(agent, "clock", lambda: datetime(2026, 11, 9, 11, 0, tzinfo=agent.slots.MSK))
+    out = agent.fix_pair_time("free_rooms", {"rooms": ["Б-202"]}, [], "Свободна ли сейчас Б-202?")
+    assert out == {"rooms": ["Б-202"], "date": "2026-11-09", "start_time": "10:40", "end_time": "12:10"}
+    assert agent.current_pair(datetime(2026, 11, 9, 12, 20)) == 3  # перерыв — ближайшая пара
+    assert agent.current_pair(datetime(2026, 11, 9, 21, 30)) is None
+
+
+def test_follow_up_inherits_campus():
+    ctx = ('[Параметры поиска: free_rooms {"campus": "В-78", "date": "2026-11-10", "end_time": "12:10", '
+           '"start_time": "10:40"}]')
+    prev = agent.previous_calls([{"role": "user", "content": "q"},
+                                 {"role": "assistant", "content": "ответ\n\n" + ctx},
+                                 {"role": "user", "content": "а в корпусе Б?"}])
+    assert prev["free_rooms"]["campus"] == "В-78"
+    out = _eff("free_rooms", {"date": "вторник", "start_time": "10:40", "end_time": "12:10", "building": "Б"},
+               "а в корпусе Б?", previous=prev["free_rooms"])
+    assert out["campus"] == "В-78" and out["building"] == "Б"
+    # новый вопрос (не уточнение) и явно другой кампус — не наследуем
+    assert "campus" not in _eff("free_rooms", {"date": "среда", "start_time": "10:40", "end_time": "12:10"},
+                                "свободные аудитории в среду на 2 паре", previous=prev["free_rooms"])
+    assert _eff("free_rooms", {"date": "среда", "campus": "С-20"}, "а на Стромынке?",
+                previous=prev["free_rooms"])["campus"] == "С-20"
+
+
+async def test_impossible_date_is_explained(monkeypatch):
+    monkeypatch.setattr(agent, "clock", lambda: datetime(2026, 11, 9, tzinfo=agent.slots.MSK))
+    with pytest.raises(S.ServiceError, match="«31 ноября» понять не удалось"):
+        await agent.run_tool("timetable", {"kind": "teacher", "name": "x", "date_from": "31 ноября"})
+
+
+def test_timetable_totals_free_days_and_missing_teacher():
+    from mirea_assistant import lessons as L
+
+    M = agent.slots.MSK
+    tt = L.Timetable("group", "ЭФБО-01-24", [
+        L.Lesson(datetime(2026, 11, 10, 9, 0, tzinfo=M), datetime(2026, 11, 10, 10, 30, tzinfo=M), "Военная кафедра",
+                 rooms=["ВУЦ"], campus="У-7/1", pair=1),
+        L.Lesson(datetime(2026, 11, 12, 9, 0, tzinfo=M), datetime(2026, 11, 12, 10, 30, tzinfo=M), "Физика",
+                 teachers=["Петров П. П."], pair=1),
+    ])
+    text = agent.format_lessons(tt, datetime(2026, 11, 10, tzinfo=M), 3)
+    assert "Всего занятий: 2." in text and "Дни без занятий: 11.11 Ср." in text
+    assert "преподаватель: не указан в расписании" in text and "преподаватель: Петров П. П." in text
+
+
+def test_prompt_knows_current_date_and_time():
+    p = agent.system_prompt("Х", datetime(2026, 11, 9, 8, 45, tzinfo=agent.slots.MSK))
+    assert "Сейчас: понедельник 09.11.2026, 08:45" in p
+    assert "После ОШИБКИ не придумывай результат" in p and "Вместимость" in p
+
+
+def test_failed_room_check_is_named():
+    data = {"teacher": "Т", "moving": None, "groups": [], "pairs_in_a_row": 1, "period": "p", "slots_found": 1,
+            "note": "n", "slots": [{"date": "2026-11-10", "pairs": [5], "time": "16:20–17:50", "free_rooms": [],
+                                    "free_rooms_total": None, "rooms_failed": True, "same_room": False, "notes": []}]}
+    assert "проверить аудитории не удалось" in agent.format_slots(data)
+
+
+def test_todays_lesson_is_named_by_adjective():
+    from mirea_assistant import dates as D
+
+    today = datetime(2026, 11, 9)
+    assert D.mentioned("перенеси сегодняшнюю пару на четверг", today) == ["2026-11-09", "2026-11-12"]
+    assert D.resolve("завтрашние занятия", today) == "2026-11-10"
+
+
+def test_group_and_target_weekday_taken_from_question():
+    out = _eff("find_reschedule_slots", {"teacher": "x", "lesson_date": "16 ноября"},
+               "Куда можно сдвинуть мою пару с РИБО-02-23 в понедельник 16 ноября?")
+    assert out["groups"] == ["РИБО-02-23"]
+    out = _eff("find_reschedule_slots", {"teacher": "x", "lesson_date": "четверг", "lesson_pairs": [3]},
+               "перенеси мою 3 пару с четверга на пятницу")
+    assert out["weekdays"] == [5]
+
+
+async def test_free_rooms_without_time_points_to_timetable():
+    with pytest.raises(S.ServiceError, match="timetable\\(kind=\"classroom\""):
+        await agent.run_tool("free_rooms", {"date": "2026-11-10", "rooms": ["Б-202"]})
+
+
+async def test_capacity_note_and_repeated_list_cleaned():
+    llm = FakeLLM(call("free_rooms", date="2026-11-10", start_time="12:40", end_time="14:10"),
+                  Reply("Свободны: " + ", ".join(["А-1", "А-2", "А-3"] * 10)))
+
+    async def runner(name, args):
+        return "2026-11-10 3-я пара: А-1, А-2, А-3"
+
+    res = await agent.answer(llm, [{"role": "user", "content": "Нужна аудитория на 30 человек 10.11 на 3 паре"}],
+                             me="Х", tool_runner=runner)
+    assert "Вместимость аудиторий в расписании не указана" in res.steps[0].result
+    assert res.text.count("А-2") == 1 and len(res.text) < 40  # прогон 09.11: модель зациклилась на перечне
+
+
+def test_room_schedule_rerouted_to_timetable():
+    name, args = agent.reroute("free_rooms", {"date": "завтра", "building": "Б", "rooms": ["Б-202"]},
+                               "Покажи расписание аудитории Б-202 на завтра")
+    assert (name, args) == ("timetable", {"kind": "classroom", "name": "Б-202", "date_from": "завтра", "days": 1})
+    # проверка «свободна ли» на паре остаётся проверкой
+    assert agent.reroute("free_rooms", {"date": "среда", "rooms": ["Б-202"]},
+                         "Свободна ли Б-202 в среду на 3 паре?")[0] == "free_rooms"

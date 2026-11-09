@@ -67,7 +67,8 @@ async def test_tool_receives_resolved_date(monkeypatch):
     monkeypatch.setattr(agent, "_date", lambda v: dates.resolve(v, TODAY))
     text = await agent.run_tool("free_rooms", {"date": "в понедельник", "start_time": "10:40", "end_time": "12:10", "campus": "В-78"})
     assert seen["date"] == "2026-11-09"
-    assert text.startswith("2026-11-09 (09.11 Пн) 10:40–12:10")  # модель видит день недели в результате
+    # модель видит день недели и номер пары в результате (прогон 09.11: «3rd pair» пересказала как «2-я пара»)
+    assert text.startswith("2026-11-09 (09.11 Пн) 2-я пара 10:40–12:10")
 
 
 @pytest.mark.parametrize(
@@ -179,3 +180,13 @@ def test_december_named_in_january_is_previous_year():
 )
 def test_mentioned_place(text, place):
     assert dates.mentioned_place(text) == place
+
+
+@pytest.mark.parametrize(
+    "text, pairs",
+    [("Хочу перенести 1-2 пары 16.11", [1, 2]), ("1–2 пару", [1, 2]), ("с 1 по 3 пару", [1, 2, 3]),
+     ("с 10:40 до 12:10", [])],
+)
+def test_pair_ranges(text, pairs):
+    # прогон 09.11: «1-2 пары» давало только [2]
+    assert dates.mentioned_pairs(text) == pairs

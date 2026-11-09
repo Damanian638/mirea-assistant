@@ -276,3 +276,74 @@ async def test_unmet_building_condition_is_reported(world):
 )
 def test_room_place(room, place):
     assert slots.room_place(room) == place
+
+
+async def test_lesson_chosen_by_group_not_by_invented_pair(world):
+    # прогон 09.11: «мою пару с РИБО-02-23 16 ноября» — модель подставила 1-ю пару, а она у другой группы
+    res = await slots.find_slots("Коняшкин", lesson_date="2030-01-07", groups=["РРБО-01-26"], need_room=False)
+    assert "5-я пара Введение" in res["moving"] and res["groups"] == ["РРБО-01-26"]
+    with pytest.raises(S.ServiceError, match="нет занятий с группой ЭФБО-01-24.*не варианты переноса"):
+        await slots.find_slots("Коняшкин", lesson_date="2030-01-07", groups=["ЭФБО-01-24"], need_room=False)
+
+
+async def test_all_pairs_of_the_day(world):
+    res = await slots.find_slots("Коняшкин", lesson_date="2030-01-07", all_day=True, need_room=False)
+    assert set(res["groups"]) == {"РИБО-02-23", "РРБО-01-26"} and res["moving"].count("пара") == 3
+
+
+async def test_room_check_retried_and_failures_ranked_lower(world, monkeypatch):
+    monkeypatch.setattr(slots, "ROOM_RETRY_DELAY", 0)
+    calls = {}
+    orig = S.free_rooms
+
+    async def flaky(rooms, date, start, end, campus=None):
+        calls[(date, start)] = calls.get((date, start), 0) + 1
+        if date == "2030-01-08":  # этот день не отвечает никогда, остальные — со второй попытки
+            raise S.ServiceError("недоступен")
+        if calls[(date, start)] == 1:
+            raise S.ServiceError("недоступен")
+        return await orig(rooms, date, start, end, campus)
+
+    monkeypatch.setattr(S, "free_rooms", flaky)
+    res = await slots.find_slots("Коняшкин", lesson_date="2030-01-07", lesson_pairs=[1, 2])
+    assert all(n == 2 for n in calls.values())  # одна повторная попытка
+    failed = [s for s in res["slots"] if s["rooms_failed"]]
+    assert failed and all(s["date"] == "2030-01-08" for s in failed)
+    first_failed = res["slots"].index(failed[0])
+    assert first_failed > 0 and all(not s["rooms_failed"] for s in res["slots"][:first_failed])
+
+
+def test_surname_case_variants():
+    assert L.name_variants("Иванова А.Д.") == ["Иванова А.Д.", "Иванов А.Д."]
+    assert "Петровский" in L.name_variants("Петровского")
+    assert L.name_variants("Коняшкин") == ["Коняшкин"]
+
+
+async def test_teacher_found_by_nominative_with_own_initials(monkeypatch):
+    # прогон 09.11: «пару Иванова А.Д.» не находилась; выбор по первой форме дал бы Иванову Д. А.
+    class F:
+        def __init__(self, name):
+            self.name, self.uid = name, name
+
+    people = [F("Иванов Артем Дмитриевич"), F("Иванова Дарья Андреевна")]
+
+    async def search(sched, kind, q):
+        return people
+
+    class Sched:
+        async def _rpc(self, name, body):
+            return [], None
+
+        async def close(self):
+            pass
+
+    async def fetch_entity(kind, query):
+        class E:
+            events = []
+        return E()
+
+    monkeypatch.setattr(S, "_search", search)
+    monkeypatch.setattr(L, "MireaSchedule", Sched)
+    monkeypatch.setattr(S, "fetch_entity", fetch_entity)
+    assert (await L.fetch("teacher", "Иванова А.Д.")).name == "Иванов Артем Дмитриевич"
+    assert (await L.fetch("teacher", "Иванова Д.А.")).name == "Иванова Дарья Андреевна"

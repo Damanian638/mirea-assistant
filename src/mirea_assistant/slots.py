@@ -36,6 +36,8 @@ BELLS: dict[int, tuple[str, str]] = {
 
 MAX_DAYS = 21
 MAX_ROOM_CHECKS = 30  # запросов свободных аудиторий за один поиск
+ROOM_RETRIES = 1
+ROOM_RETRY_DELAY = 1.0
 ROOMS_SHOWN = 8
 
 
@@ -56,6 +58,7 @@ class Slot:
     pairs: list[int]
     free_rooms: list[str] = field(default_factory=list)
     rooms_total: int | None = None
+    rooms_failed: bool = False
     same_room: bool = False
     notes: list[str] = field(default_factory=list)
     score: int = 0
@@ -76,6 +79,7 @@ class Slot:
             "time": f"{self.start}–{self.end}",
             "free_rooms": self.free_rooms,
             "free_rooms_total": self.rooms_total,
+            "rooms_failed": self.rooms_failed,
             "same_room": self.same_room,
             "notes": self.notes,
         }
@@ -141,10 +145,25 @@ def _describe(lessons: list[L.Lesson]) -> str:
     )
 
 
-def _pick_lessons(tt: L.Timetable, day: date, pairs: list[int] | None) -> list[L.Lesson]:
+def _pick_lessons(tt: L.Timetable, day: date, pairs: list[int] | None, groups: list[str] | None = None,
+                  all_day: bool = False) -> list[L.Lesson]:
     that_day = [x for x in tt.lessons if x.day == day]
     if not that_day:
-        raise S.ServiceError(f"{human_date(day)} у преподавателя {tt.name} нет занятий — проверьте дату.")
+        raise S.ServiceError(f"{human_date(day)} у преподавателя {tt.name} нет занятий — проверьте дату. "
+                             "Вариантов переноса нет: не предлагай время сам.")
+    if all_day and not pairs:
+        return that_day
+    if groups and not pairs:
+        # «мою пару с РИБО-02-23 в понедельник»: занятие выбирает группа. Раньше модель подставляла 1-ю пару,
+        # у которой другая группа, и программа искала время для чужого занятия.
+        wanted = {S._norm(g) for g in groups}
+        by_group = [x for x in that_day if wanted & {S._norm(g) for g in x.groups}]
+        if not by_group:
+            raise S.ServiceError(
+                f"{human_date(day)} у преподавателя {tt.name} нет занятий с группой {', '.join(groups)}. "
+                f"В этот день: {_describe(that_day)}. Это расписание дня, а не варианты переноса."
+            )
+        return by_group
     if not pairs and len(that_day) > 1:
         # Без номера пары раньше переносились ВСЕ занятия дня, с разными группами — без вопроса.
         raise S.ServiceError(
@@ -156,7 +175,8 @@ def _pick_lessons(tt: L.Timetable, day: date, pairs: list[int] | None) -> list[L
     if missing or not chosen:
         raise S.ServiceError(
             f"{human_date(day)} у преподавателя {tt.name} нет {', '.join(map(str, missing))}-й пары. "
-            f"В этот день: {_describe(that_day)}."
+            f"В этот день: {_describe(that_day)}. Это расписание дня, а не варианты переноса: "
+            "спроси, какую из этих пар переносим."
         )
     return chosen
 
@@ -174,6 +194,7 @@ async def find_slots(
     need_room: bool = True,
     building: str | None = None,
     floor: int | None = None,
+    all_day: bool = False,
 ) -> dict:
     """Куда перенести пару: время, когда свободны преподаватель и все группы, и аудитории."""
     lesson_pairs = _ints(lesson_pairs, range(1, 8), "Номер переносимой пары")
@@ -190,7 +211,7 @@ async def find_slots(
         raise S.ServiceError(f"Диапазон слишком большой: не больше {MAX_DAYS} дней за один поиск.")
 
     tt = await L.fetch("teacher", teacher)
-    moving = _pick_lessons(tt, lesson_day, lesson_pairs) if lesson_day else []
+    moving = _pick_lessons(tt, lesson_day, lesson_pairs, groups, all_day) if lesson_day else []
     group_names = list(dict.fromkeys([g for x in moving for g in x.groups] + [g.strip() for g in groups or [] if g.strip()]))
     if campus is None and moving:
         campus = Counter(x.campus for x in moving if x.campus).most_common(1)[0][0] if any(x.campus for x in moving) else None
@@ -242,16 +263,25 @@ async def find_slots(
 
     checked = 0
     if need_room and candidates:
-        sem = asyncio.Semaphore(4)
+        # Прогон 09.11: при 4 параллельных запросах сервис МИРЭА отказывал в 4 проверках из 6.
+        sem = asyncio.Semaphore(2)
 
         async def fill(s: Slot) -> None:
+            data = None
             async with sem:
-                try:
-                    # одним окном на весь блок: аудитория свободна на все пары подряд
-                    data = await S.free_rooms(None, s.day.isoformat(), s.start, s.end, campus)
-                except S.ServiceError:
-                    s.notes.append("свободные аудитории не удалось проверить")
-                    return
+                for attempt in range(ROOM_RETRIES + 1):
+                    try:
+                        # одним окном на весь блок: аудитория свободна на все пары подряд
+                        data = await S.free_rooms(None, s.day.isoformat(), s.start, s.end, campus)
+                        break
+                    except S.ServiceError:
+                        if attempt < ROOM_RETRIES:
+                            await asyncio.sleep(ROOM_RETRY_DELAY)
+            if data is None:
+                s.rooms_failed = True
+                s.score -= 2  # непроверенное не должно стоять выше проверенного
+                s.notes.append("свободные аудитории проверить не удалось")
+                return
             fitting = [r for r in data["free_rooms"] if room_fits(r["room"], building, floor)]
             rooms = [f"{r['room']} ({r['campus']})" if r.get("campus") and not campus else r["room"] for r in fitting]
             same = [r for r in rooms if r.split(" (")[0] in original_rooms]

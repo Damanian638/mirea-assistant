@@ -20,6 +20,14 @@ _MONTHS = {
     "август": 8, "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12,
 }
 _RELATIVE = {"сегодня": 0, "завтра": 1, "послезавтра": 2, "вчера": -1}
+# «сегодняшнюю пару», «завтрашние занятия»: иначе дата пары считалась бы не названной пользователем
+_RELATIVE_STEMS = [("послезавтрашн", 2), ("сегодняшн", 0), ("завтрашн", 1), ("вчерашн", -1)]
+
+
+def _relative(word: str) -> int | None:
+    if word in _RELATIVE:
+        return _RELATIVE[word]
+    return next((n for stem, n in _RELATIVE_STEMS if word.startswith(stem)), None)
 
 
 def _weekday(word: str) -> int | None:
@@ -75,8 +83,8 @@ def resolve(value: object, today: date | datetime) -> str | None:
             return raw
 
     for w in words:
-        if w in _RELATIVE:
-            return (today + timedelta(days=_RELATIVE[w])).isoformat()
+        if _relative(w) is not None:
+            return (today + timedelta(days=_relative(w))).isoformat()
 
     nums = [w for w in words if w.isdigit()]
     months = [_month(w) for w in words if not w.isdigit()]
@@ -113,8 +121,8 @@ def mentioned(text: str, today: date | datetime) -> list[str]:
     for m in re.finditer(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b", low):
         found.append(resolve(m.group(0), today) or "")
     for i, w in enumerate(words):
-        if w in _RELATIVE:
-            found.append((today + timedelta(days=_RELATIVE[w])).isoformat())
+        if _relative(w) is not None:
+            found.append((today + timedelta(days=_relative(w))).isoformat())
         elif _weekday(w) is not None:
             found.append(resolve(("следующий " if nxt else "прошлый " if prev else "") + w, today) or "")
         elif w.isdigit() and i + 1 < len(words) and _month(words[i + 1]):
@@ -143,10 +151,20 @@ _PAIR_WORD_RE = re.compile(
 )
 
 
+# «1-2 пары», «1–2 пару», «с 1 по 3 пару» — все пары диапазона (раньше бралась только последняя)
+_PAIR_RANGE_RE = re.compile(
+    r"(?<![\d.:])(?:с\s+)?([1-7])(?:-?(?:й|ой))?\s*(?:[-–—]|\s+по\s+)\s*([1-7])(?![\d.:])(?:-?(?:я|й|ю|ой|ей))?\s*пар"
+)
+
+
 def mentioned_pairs(text: str) -> list[int]:
     """Номера пар в вопросе: «на 7 паре», «3-я пара», «первой паре». «1 и 2 пары» — обе."""
     low = (text or "").casefold().replace("ё", "е")[:4000]
     found: list[int] = []
+    for m in _PAIR_RANGE_RE.finditer(low):
+        a, b = int(m.group(1)), int(m.group(2))
+        if a < b:
+            found += list(range(a, b + 1))
     for m in _PAIR_LIST_RE.finditer(low):
         found += [int(x) for x in re.findall(r"\d", m.group(1))]
     for m in _PAIR_WORD_RE.finditer(low):

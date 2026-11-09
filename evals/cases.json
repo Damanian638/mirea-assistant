@@ -1,7 +1,7 @@
 {
   "today": "2026-11-07T12:00:00+03:00",
   "me": "Коняшкин Георгий Викторович",
-  "note": "Сегодня суббота 7 ноября 2026. Понедельник = 9.11, вторник = 10.11, среда = 11.11, четверг = 12.11, пятница = 13.11. Проверки: date:<поле> — дата после разбора, set:<поле> — набор чисел/строк, has:<поле> — подстрока, eq:<поле> — значение, absent:<поле> — поле не передано, time — начало и конец.",
+  "note": "Сегодня суббота 7 ноября 2026. Понедельник = 9.11, вторник = 10.11, среда = 11.11, четверг = 12.11, пятница = 13.11. Проверки: date:<поле> — дата после разбора, set:<поле> — набор чисел/строк, has:<поле> — подстрока, eq:<поле> — значение, absent:<поле> — поле не передано, time — начало и конец. history — предыдущие сообщения разговора (для уточнений).",
   "cases": [
     {"id": "move-1", "group": "Перенос пары", "q": "Куда перенести мои 1 и 2 пары 9 ноября, чтобы было удобно и без пересечений?",
      "expect": {"tool": "find_reschedule_slots", "checks": {"has:teacher": "Коняшкин", "date:lesson_date": "2026-11-09", "set:lesson_pairs": [1, 2], "absent:allowed_pairs": true, "absent:campus": true}}},
@@ -63,6 +63,32 @@
     {"id": "ask-2", "group": "Уточнить, а не угадывать", "q": "Перенеси пару",
      "expect": {"tool": null}},
     {"id": "ask-3", "group": "Уточнить, а не угадывать", "q": "Привет! Что ты умеешь?",
-     "expect": {"tool": null}}
+     "expect": {"tool": null}},
+    {"id": "run-lab-wed", "group": "Прогон 09.11: не выдумывать", "q": "Мне нужно перенести лабораторную в среду, куда можно?",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"date:lesson_date": "2026-11-11", "absent:lesson_pairs": true}}},
+    {"id": "run-pair-5", "group": "Прогон 09.11: не выдумывать", "q": "Перенеси пару 10 ноября на 5 паре на любой день следующей недели, кроме субботы",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"date:lesson_date": "2026-11-10", "set:lesson_pairs": [5]}}},
+    {"id": "run-by-group", "group": "Прогон 09.11: не выдумывать", "q": "Куда можно сдвинуть мою пару с РИБО-02-23 в понедельник 16 ноября?",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"date:lesson_date": "2026-11-16", "set:groups": ["РИБО-02-23"], "absent:lesson_pairs": true}}},
+    {"id": "run-all-day", "group": "Прогон 09.11: не выдумывать", "q": "Заболел, перенеси все мои пары в понедельник",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"date:lesson_date": "2026-11-09", "absent:lesson_pairs": true}}},
+    {"id": "run-capacity", "group": "Прогон 09.11: не выдумывать", "q": "Нужна аудитория на 30 человек в понедельник на 3 паре",
+     "expect": {"tool": "free_rooms", "checks": {"date:date": "2026-11-09", "absent:rooms": true, "time": ["12:40", "14:10"]}}},
+    {"id": "run-morning", "group": "Прогон 09.11: время и места", "q": "Хочу перенести 1-2 пары 16.11 на утро другого дня",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"date:lesson_date": "2026-11-16", "set:lesson_pairs": [1, 2], "set:allowed_pairs": [1, 2]}}},
+    {"id": "run-now", "group": "Прогон 09.11: время и места", "q": "Свободна ли сейчас Б-202?",
+     "expect": {"tool": "free_rooms", "checks": {"has:rooms": "Б-202", "date:date": "2026-11-07", "time": ["10:40", "12:10"]}}},
+    {"id": "run-building-floor", "group": "Прогон 09.11: время и места", "q": "Какие свободны аудитории в корпусе А на первом этаже в понедельник на 4 паре на Вернадского 78?",
+     "expect": {"tool": "free_rooms", "checks": {"date:date": "2026-11-09", "time": ["14:20", "15:50"], "eq:building": "А", "eq:floor": 1, "eq:campus": "В-78"}}},
+    {"id": "run-genitive", "group": "Прогон 09.11: время и места", "q": "Куда перенести пару Иванова А.Д. в среду на 2 паре?",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"has:teacher": "Иванов", "date:lesson_date": "2026-11-11", "set:lesson_pairs": [2]}}},
+    {"id": "run-who", "group": "Прогон 09.11: время и места", "q": "Кто ведёт у ЭФБО-01-24 в среду?",
+     "expect": {"tool": "timetable", "checks": {"eq:kind": "group", "date:date_from": "2026-11-11"}}},
+    {"id": "run-two-dates", "group": "Прогон 09.11: время и места", "q": "что у меня 10.11 и 11.11",
+     "expect": {"tool": "timetable", "checks": {"date:date_from": "2026-11-10", "has:name": "Коняшкин"}}},
+    {"id": "run-fu-building", "group": "Прогон 09.11: уточнения", "history": [{"role": "user", "content": "Свободные аудитории в понедельник на 2 паре в В-78"}, {"role": "assistant", "content": "Свободных аудиторий 58: А-128-а, Б-209-1, …\n\n[Параметры поиска: free_rooms {\"campus\": \"В-78\", \"date\": \"2026-11-09\", \"end_time\": \"12:10\", \"start_time\": \"10:40\"}]"}], "q": "а в корпусе Б?",
+     "expect": {"tool": "free_rooms", "checks": {"eq:campus": "В-78", "eq:building": "Б", "date:date": "2026-11-09", "time": ["10:40", "12:10"]}}},
+    {"id": "run-fu-pair", "group": "Прогон 09.11: уточнения", "history": [{"role": "user", "content": "Куда перенести мою 1 пару в четверг?"}, {"role": "assistant", "content": "Варианты: 24.11 Вт, 5 пара …\n\n[Параметры поиска: find_reschedule_slots {\"lesson_date\": \"2026-11-12\", \"lesson_pairs\": [1], \"teacher\": \"Коняшкин Георгий Викторович\"}]"}], "q": "а если только на 3 паре?",
+     "expect": {"tool": "find_reschedule_slots", "checks": {"date:lesson_date": "2026-11-12", "set:lesson_pairs": [1], "set:allowed_pairs": [3]}}}
   ]
 }

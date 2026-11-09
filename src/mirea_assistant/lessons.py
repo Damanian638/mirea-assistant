@@ -90,18 +90,51 @@ def parse(payload) -> list[Lesson]:
     return out
 
 
+# Окончания косвенных падежей фамилии → именительный: «пару Иванова А.Д.» искала «Иванова» и не находила.
+_SURNAME_ENDINGS = [("ской", "ская"), ("цкой", "цкая"), ("ского", "ский"), ("цкого", "цкий"), ("ому", ""),
+                    ("ого", "ий"), ("ой", "а"), ("ову", "ов"), ("еву", "ев"), ("ину", "ин"), ("ова", "ов"),
+                    ("ева", "ев"), ("ина", "ин"), ("ыне", "ына"), ("е", "а")]
+
+
+def name_variants(query: str) -> list[str]:
+    """«Иванова А.Д.» → ["Иванова А.Д.", "Иванов А.Д."]. Первое слово — фамилия; женская «Иванова» тоже остаётся."""
+    words = query.split()
+    if not words:
+        return [query]
+    out = [query]
+    head = words[0]
+    for end, repl in _SURNAME_ENDINGS:
+        if len(head) > len(end) + 2 and head.casefold().endswith(end):
+            out.append(" ".join([head[: -len(end)] + repl, *words[1:]]))
+    return list(dict.fromkeys(out))
+
+
+async def _find(sched, kind: str, query: str):
+    """Найти и выбрать одну сущность. Для преподавателя пробуются формы фамилии; каждая выбирается со своими
+    инициалами («Иванов А.Д.» → Иванов Артем Дмитриевич, а не Иванова Дарья Андреевна)."""
+    first_error: S.ServiceError | None = None
+    for q in name_variants(query) if kind == "teacher" else [query]:
+        found = [f for f in await S._search(sched, kind, q) if f.name]
+        if not found:
+            continue
+        try:
+            return S._pick(found, kind, q)
+        except S.ServiceError as e:
+            first_error = first_error or e
+    if first_error:
+        raise first_error
+    raise S.ServiceError(
+        f"По запросу «{query}» ничего не найдено ({kind}). Проверьте написание; "
+        "если оно верное, сервис расписания мог быть временно недоступен — повторите позже."
+    )
+
+
 async def fetch(kind: str, query: str) -> Timetable:
     """Найти сущность (с выбором при неоднозначности) и загрузить занятия с группами."""
     query = S._query(kind, query)
     sched = MireaSchedule()
     try:
-        found = [f for f in await S._search(sched, kind, query) if f.name]
-        if not found:
-            raise S.ServiceError(
-                f"По запросу «{query}» ничего не найдено ({kind}). Проверьте написание; "
-                "если оно верное, сервис расписания мог быть временно недоступен — повторите позже."
-            )
-        pick = S._pick(found, kind, query)
+        pick = await _find(sched, kind, query)
         payload, err = await sched._rpc("get_schedule_for_entity", {
             "p_entity_type": kind, "p_entity": pick.uid or pick.name, "p_organization_id": pm.SCHEDULE_ORGANIZATION_ID,
         })

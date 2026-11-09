@@ -107,3 +107,23 @@ def test_report_lists_errors_and_groups():
     text = evaluate.report([good, bad], "qwen3:4b", False)
     assert "# Экзамен модели qwen3:4b: 1 из 2" in text and "| Перенос пары | 1 из 2 |" in text
     assert "**move-2**" in text and "модель передала" in text and "- вызван timetable" in text
+
+
+def test_live_suspicions_flag_invented_rooms_groups_and_dates():
+    from mirea_assistant import evaluate
+
+    results = "2026-11-10 (10.11 Вт) 3-я пара: Б-202, А-9\nгруппы: РИБО-02-23"
+    # прогон 09.11: модель выдала расписание дня из текста ошибки за варианты переноса на 16–17 ноября
+    answer = "1. 16 ноября — Б-202, В-317, группа ЭФБО-06-24. 2. 10.11 — А-9, РИБО-02-23"
+    got = evaluate.suspicions(answer, results, "куда перенести пару")
+    assert got == ["аудитория В-317 не из результатов", "группа ЭФБО-06-24 не из результатов",
+                   "дата 16.11 не из результатов"]
+    assert evaluate.suspicions("В-78, Б-202, 10 ноября", results, "") == []
+
+
+def test_history_is_sent_before_question():
+    from mirea_assistant import evaluate
+
+    case = {"q": "а в корпусе Б?", "history": [{"role": "user", "content": "аудитории в В-78"},
+                                               {"role": "assistant", "content": "…"}]}
+    assert [m["content"] for m in evaluate._messages(case)] == ["аудитории в В-78", "…", "а в корпусе Б?"]
