@@ -193,7 +193,8 @@ def test_formatters_are_compact():
                    "free_rooms_total": 57, "same_room": True, "notes": ["в этот день у преподавателя уже есть пары"]}],
     })
     assert "Переносим: 9 ноября (Пн): 1-я пара ПКР" in slots_text and "пар подряд: 2" in slots_text
-    assert "1. 10.11 Вт (2026-11-10), 5–6 пара 16:20–19:30: Б-202, А-9 (та же аудитория свободна), всего свободно 57" in slots_text
+    assert "1. 10.11 Вт (2026-11-10), 5–6 пара 16:20–19:30: Б-202, А-9 (та же аудитория свободна), всего свободных аудиторий 57" in slots_text
+    assert "аудитории: В-78;" in slots_text  # «57» — аудитории, а не места (скриншот: модель сказала «57 мест»)
     rooms = agent.format_free_rooms({"date": "2030-01-08", "from": "10:40", "to": "12:10", "campus": "Х",
                                      "total_free": 0, "free_rooms": [], "available_campuses": ["В-78"]})
     assert "Корпуса со свободными аудиториями: В-78" in rooms
@@ -331,3 +332,81 @@ def test_lesson_date_corrected_when_user_named_one_day(monkeypatch):
     # названный день — новое время, а не дата пары: не трогаем
     args = {"lesson_date": "2026-11-05", "date_from": "2026-11-09"}
     assert agent.fix_dates("find_reschedule_slots", args, ["2026-11-09"]) == args
+
+
+SCREENSHOT_Q = ("Куда перенести мои 1 и 2 пары в понедельник, чтобы было удобно и без пересечений? "
+                "Вернадского 78, аудитория должна быть в корпусе Б на втором этаже")
+
+
+async def test_screenshot_question_gets_building_floor_and_no_invented_period(monkeypatch):
+    """Скриншот 09.11 (понедельник): модель передала campus="Б" и сама ограничила поиск днём 10.11."""
+    monkeypatch.setattr(agent, "clock", lambda: datetime(2026, 11, 9, 8, 30, tzinfo=agent.slots.MSK))
+    llm = FakeLLM(call("find_reschedule_slots", teacher="Коняшкин Георгий Викторович", lesson_date="понедельник",
+                       lesson_pairs=[1, 2], campus="Б", date_from="10.11", date_to="10.11"),
+                  Reply("Варианты…\n[Параметры поиска: find_reschedule_slots {}]"))
+    seen = {}
+
+    async def runner(name, args):
+        seen.update(args)
+        return "Найдено вариантов: 3"
+
+    res = await agent.answer(llm, [{"role": "user", "content": SCREENSHOT_Q}], me="Коняшкин Георгий Викторович",
+                             tool_runner=runner)
+    assert seen["building"] == "Б" and seen["floor"] == 2 and seen["campus"] == "В-78"
+    assert "date_from" not in seen and "date_to" not in seen
+    assert res.text == "Варианты…"  # модель повторила служебную строку — она убрана
+    assert res.context.startswith("[Параметры поиска: find_reschedule_slots {") and '"building": "Б"' in res.context
+
+
+async def test_follow_up_sees_previous_search_parameters():
+    llm = FakeLLM(Reply("Ок"))
+    ctx = '[Параметры поиска: find_reschedule_slots {"lesson_date": "понедельник", "lesson_pairs": [1, 2]}]'
+    await agent.answer(llm, [{"role": "user", "content": "куда перенести 1 и 2 пару"},
+                             {"role": "assistant", "content": "Варианты…\n\n" + ctx},
+                             {"role": "user", "content": "а в корпусе А?"}])
+    sent = llm.calls[0][0]
+    assert ctx in sent[2]["content"] and "Сам эту строку не пиши" in sent[0]["content"]
+
+
+@pytest.mark.parametrize(
+    "text, args, kept",
+    [
+        ("перенести пару в понедельник", {"date_from": "10.11", "date_to": "10.11"}, False),
+        ("перенести пару на следующей неделе", {"date_from": "2026-11-16", "date_to": "2026-11-21"}, True),
+        ("перенести пару 9 ноября на четверг", {"date_from": "четверг"}, True),
+        ("перенести пару до 20 ноября", {"date_to": "20 ноября"}, True),
+    ],
+)
+def test_invented_period_dropped_only_when_user_named_none(monkeypatch, text, args, kept):
+    from mirea_assistant import dates as D
+
+    today = datetime(2026, 11, 9, tzinfo=agent.slots.MSK)
+    monkeypatch.setattr(agent, "clock", lambda: today)
+    out = agent.drop_invented_period("find_reschedule_slots", {"teacher": "x", **args}, D.mentioned(text, today), text)
+    assert (out == {"teacher": "x", **args}) is kept
+
+
+def test_campus_letter_becomes_building():
+    out = agent.fix_place("free_rooms", {"date": "завтра", "campus": "корпус Б"}, "свободные аудитории завтра")
+    assert out == {"date": "завтра", "building": "Б"}
+    # конкретные аудитории — фильтр не нужен
+    assert agent.fix_place("free_rooms", {"rooms": ["Б-202"]}, "свободна ли Б-202 в корпусе Б") == {"rooms": ["Б-202"]}
+
+
+async def test_free_rooms_filtered_by_building_and_floor(monkeypatch):
+    async def free_rooms(rooms, day, start, end, campus=None):
+        return {"date": "2030-01-08", "from": start, "to": end, "campus": campus, "total_free": 4,
+                "free_rooms": [{"room": r, "campus": "В-78"} for r in ("Б-202", "Б-305", "А-201", "Б-2")]}
+
+    monkeypatch.setattr(agent.S, "free_rooms", free_rooms)
+    text = await agent.run_tool("free_rooms", {"date": "2030-01-08", "start_time": "10:40", "end_time": "12:10",
+                                               "campus": "В-78", "building": "Б", "floor": 2})
+    assert "В-78, корпус Б, 2-й этаж: свободных аудиторий 1\nБ-202" in text
+
+
+def test_period_words_not_inside_weekday():
+    assert not agent._PERIOD_WORDS.search("перенести пару в понедельник")
+    assert agent._PERIOD_WORDS.search("куда-нибудь на этой неделе")
+    # срок словами без даты («на этой неделе») сохраняет период модели
+    args = {"teacher": "x", "date_from": "2026-11-10", "date_to": "2026-11-14"}
+    assert agent.drop_invented_period("find_reschedule_slots", args, [], "отработка на этой неделе") == args

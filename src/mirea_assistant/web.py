@@ -86,7 +86,7 @@ def create_app(llm: Ollama, port: int, on_shutdown: Callable[[], None] | None = 
             except Exception:
                 logger.exception("chat failed")
                 return JSONResponse({"error": "Внутренняя ошибка помощника. Повторите вопрос."}, status_code=500)
-        return JSONResponse({"answer": result.text, "steps": [s.public() for s in result.steps]})
+        return JSONResponse({"answer": result.text, "steps": [s.public() for s in result.steps], "context": result.context})
 
     async def shutdown(request: Request) -> Response:
         if bad := forbidden(request):

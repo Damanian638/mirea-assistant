@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -80,6 +81,28 @@ class Slot:
         }
 
 
+_ROOM_RE = re.compile(r"^\s*([^\W\d_]{1,4})-(\d+)")
+
+
+def room_place(room: str) -> tuple[str | None, int | None]:
+    """«Б-202» → (корпус «б», этаж 2). Этаж — первая цифра трёхзначного номера; у «А-16» этаж неизвестен."""
+    m = _ROOM_RE.match(room or "")
+    if not m:
+        return None, None
+    num = m.group(2)
+    return S._norm(m.group(1)), int(num[0]) if len(num) >= 3 else None
+
+
+def room_fits(room: str, building: str | None, floor: int | None) -> bool:
+    b, f = room_place(room)
+    return (not building or b == S._norm(building)) and (floor is None or f == floor)
+
+
+def place_text(campus: str | None, building: str | None, floor: int | None) -> str:
+    parts = [campus or ""] + ([f"корпус {building}"] if building else []) + ([f"{floor}-й этаж"] if floor else [])
+    return ", ".join(p for p in parts if p)
+
+
 def _at(day: date, hhmm: str) -> datetime:
     h, m = (int(x) for x in hhmm.split(":"))
     return datetime(day.year, day.month, day.day, h, m, tzinfo=MSK)
@@ -149,6 +172,8 @@ async def find_slots(
     allowed_pairs: list[int] | None = None,
     weekdays: list[int] | None = None,
     need_room: bool = True,
+    building: str | None = None,
+    floor: int | None = None,
 ) -> dict:
     """Куда перенести пару: время, когда свободны преподаватель и все группы, и аудитории."""
     lesson_pairs = _ints(lesson_pairs, range(1, 8), "Номер переносимой пары")
@@ -227,24 +252,26 @@ async def find_slots(
                 except S.ServiceError:
                     s.notes.append("свободные аудитории не удалось проверить")
                     return
-            rooms = [f"{r['room']} ({r['campus']})" if r.get("campus") and not campus else r["room"]
-                     for r in data["free_rooms"]]
+            fitting = [r for r in data["free_rooms"] if room_fits(r["room"], building, floor)]
+            rooms = [f"{r['room']} ({r['campus']})" if r.get("campus") and not campus else r["room"] for r in fitting]
             same = [r for r in rooms if r.split(" (")[0] in original_rooms]
             s.same_room = bool(same)
             if same:
                 s.score += 2
             s.free_rooms = (same + [r for r in rooms if r not in same])[:ROOMS_SHOWN]
-            s.rooms_total = data["total_free"]
+            s.rooms_total = len(fitting) if (building or floor) else data["total_free"]
 
         to_check = candidates[:MAX_ROOM_CHECKS]
         checked = len(to_check)
         await asyncio.gather(*(fill(s) for s in to_check))
-        if campus and all(s.rooms_total == 0 for s in to_check):
-            # Обычно это неточное название корпуса («Вернадского» без номера): иначе лучшие варианты были бы
-            # выброшены, а наверх вышли бы непроверенные.
+        if (campus or building or floor) and all(s.rooms_total == 0 for s in to_check):
+            # Неточное название корпуса («Вернадского» без номера) или слишком узкое условие (корпус, этаж):
+            # иначе лучшие варианты были бы выброшены, а наверх вышли бы непроверенные.
+            where = place_text(campus, building, floor)
+            hint = ("Проверьте корпус (В-78, В-86, С-20, МП-1, СГ-22) или ищите без корпуса."
+                    if not (building or floor) else "Условие по корпусу/этажу не выполняется — предложите ослабить его.")
             raise S.ServiceError(
-                f"В корпусе «{campus}» не найдено свободных аудиторий ни в одном из {checked} лучших вариантов. "
-                "Проверьте корпус (В-78, В-86, С-20, МП-1, СГ-22) или ищите без корпуса."
+                f"Условие «{where}»: свободных аудиторий нет ни в одном из {checked} лучших вариантов. {hint}"
             )
         candidates = [s for s in to_check if s.rooms_total != 0] + candidates[checked:]
         candidates.sort(key=lambda s: (-s.score, s.day, s.pairs[0]))
@@ -255,6 +282,8 @@ async def find_slots(
         "moving_date": human_date(lesson_day) if lesson_day else None,
         "groups": group_names,
         "campus": campus,
+        "building": building,
+        "floor": floor,
         "pairs_in_a_row": block,
         "period": f"{start.isoformat()} — {end.isoformat()}",
         "slots_found": len(candidates),

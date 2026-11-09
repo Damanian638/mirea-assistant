@@ -63,6 +63,8 @@ TOOLS = [
                     "end_time": {"type": "string", "description": "ЧЧ:ММ"},
                     "campus": {"type": "string", "description": "Корпус: В-78, В-86, С-20, МП-1, СГ-22"},
                     "rooms": {"type": "array", "items": {"type": "string"}, "description": "Конкретные аудитории для проверки"},
+                    "building": {"type": "string", "description": "Буква корпуса внутри кампуса, если пользователь её назвал: «корпус Б» → «Б»"},
+                    "floor": {"type": "integer", "description": "Этаж, если пользователь его назвал"},
                 },
                 "required": ["date"],
             },
@@ -88,7 +90,9 @@ TOOLS = [
                     "allowed_pairs": {"type": "array", "items": {"type": "integer"}, "description": "Только если пользователь сам ограничил НОВОЕ время номерами пар («можно только на 3–5 паре»)"},
                     "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "Только если пользователь ограничил дни недели: 1=пн … 6=сб"},
                     "groups": {"type": "array", "items": {"type": "string"}, "description": "Группы — только если переносимая пара не указана (отработка для конкретных групп)"},
-                    "campus": {"type": "string", "description": "Корпус — только если пользователь его назвал"},
+                    "campus": {"type": "string", "description": "Кампус (В-78, В-86, С-20, МП-1, СГ-22) — только если пользователь его назвал"},
+                    "building": {"type": "string", "description": "Буква корпуса внутри кампуса: «корпус Б» → «Б»"},
+                    "floor": {"type": "integer", "description": "Этаж аудитории, если пользователь его назвал"},
                 },
                 "required": ["teacher"],
             },
@@ -190,7 +194,8 @@ def format_free_rooms(data: dict) -> str:
     if "rooms" in data:
         return head + "\n" + "\n".join(f"{r['room']}: {'свободна' if r['free'] else 'занята'}" for r in data["rooms"])
     rooms = [f"{r['room']}" + (f" ({r['campus']})" if r.get("campus") and not data.get("campus") else "") for r in data["free_rooms"]]
-    text = f"{head}, корпус {data.get('campus') or 'любой'}: свободно {data['total_free']}\n" + ", ".join(rooms[:40])
+    where = data.get("place") or f"корпус {data.get('campus') or 'любой'}"
+    text = f"{head}, {where}: свободных аудиторий {data['total_free']}\n" + ", ".join(rooms[:40])
     if data["total_free"] > 40:
         text += f" … и ещё {data['total_free'] - 40}"
     if data.get("available_campuses") is not None:
@@ -203,7 +208,8 @@ def format_slots(data: dict) -> str:
     if data.get("moving"):
         lines.append(f"Переносим: {data['moving_date']}: {data['moving']}.")
     lines.append(f"Преподаватель {data['teacher']}; группы: {', '.join(data['groups']) or 'не указаны'}; "
-                 f"корпус {data.get('campus') or 'любой'}; пар подряд: {data['pairs_in_a_row']}; "
+                 f"аудитории: {slots.place_text(data.get('campus'), data.get('building'), data.get('floor')) or 'любой корпус'}; "
+                 f"пар подряд: {data['pairs_in_a_row']}; "
                  f"период поиска {data['period']}. Найдено вариантов: {data['slots_found']}.")
     if not data["slots"]:
         lines.append("Подходящего времени, когда свободны все, нет — предложите расширить период поиска.")
@@ -213,7 +219,7 @@ def format_slots(data: dict) -> str:
         pairs = "–".join(map(str, (sl["pairs"][0], sl["pairs"][-1]))) if len(sl["pairs"]) > 1 else str(sl["pairs"][0])
         rooms = ", ".join(sl["free_rooms"]) if sl["free_rooms"] else "аудитории не проверялись"
         same = " (та же аудитория свободна)" if sl.get("same_room") else ""
-        total = f", всего свободно {sl['free_rooms_total']}" if sl.get("free_rooms_total") else ""
+        total = f", всего свободных аудиторий {sl['free_rooms_total']}" if sl.get("free_rooms_total") else ""
         notes = f" — {'; '.join(sl['notes'])}" if sl["notes"] else ""
         lines.append(f"{i}. {_fmt_day(sl['date'])} ({sl['date']}), {pairs} пара {sl['time']}: {rooms}{same}{total}{notes}")
     if len(data["slots"]) > 10:
@@ -264,6 +270,28 @@ def _campus(v: Any) -> str | None:
     return raw
 
 
+def _building(v: Any) -> str | None:
+    """«Б», «корпус Б», «б» → «Б». Коды кампусов («В-78») сюда не относятся."""
+    raw = (_str(v) or "").casefold().replace("корпус", "").strip(" «»\"'.")
+    return raw.upper() if len(raw) == 1 and raw.isalpha() else None
+
+
+def _floor(v: Any) -> int | None:
+    try:
+        n = int(float(str(v).strip())) if _str(v) else None
+    except ValueError:
+        return None
+    return n if n and 1 <= n <= 30 else None
+
+
+def _filter_rooms(data: dict, building: str | None, floor: int | None) -> dict:
+    if not (building or floor) or "free_rooms" not in data:
+        return data
+    fitting = [r for r in data["free_rooms"] if slots.room_fits(r["room"], building, floor)]
+    return {**data, "free_rooms": fitting, "total_free": len(fitting),
+            "place": slots.place_text(data.get("campus"), building, floor)}
+
+
 async def run_tool(name: str, args: dict) -> str:
     if name == "timetable":
         days = int(args.get("days") or 7)
@@ -276,7 +304,7 @@ async def run_tool(name: str, args: dict) -> str:
         data = await S.free_rooms(_list(args.get("rooms")) or None, _date(args.get("date")),
                                   _str(args.get("start_time")) or "", _str(args.get("end_time")) or "",
                                   _campus(args.get("campus")))
-        return format_free_rooms(data)
+        return format_free_rooms(_filter_rooms(data, _building(args.get("building")), _floor(args.get("floor"))))
     if name == "find_reschedule_slots":
         data = await slots.find_slots(
             _str(args.get("teacher")) or "",
@@ -288,6 +316,8 @@ async def run_tool(name: str, args: dict) -> str:
             campus=_campus(args.get("campus")),
             allowed_pairs=_ints(args.get("allowed_pairs") or args.get("pairs")),
             weekdays=_ints(args.get("weekdays"), _WEEKDAYS),
+            building=_building(args.get("building")),
+            floor=_floor(args.get("floor")),
         )
         return format_slots(data)
     if name == "search":
@@ -386,9 +416,48 @@ def effective_args(name: str, args: dict, me: str | None, user_dates: list[str],
     """Аргументы, с которыми программа реально вызовет инструмент (после подстановки ФИО и исправления даты)."""
     out = fix_dates(name, with_me(name, args, me), user_dates)
     out = fix_pair_time(name, out, user_pairs or [], user_text)
+    out = fix_place(name, out, user_text)
+    out = drop_invented_period(name, out, user_dates, user_text)
     if _str(out.get("campus")):
         out = {**out, "campus": _campus(out["campus"])}
     return out
+
+
+def fix_place(name: str, args: dict, user_text: str) -> dict:
+    """Корпус-буква и этаж считает программа. Экзамен (скриншот): «в корпусе Б на втором этаже» —
+    модель передала campus="Б", а этаж потеряла; предложены аудитории А-128-а, А-16…"""
+    if name not in ("free_rooms", "find_reschedule_slots") or _list(args.get("rooms")):
+        return args
+    out = dict(args)
+    letter = _building(out.get("campus"))
+    if letter:  # «Б» — корпус внутри кампуса, а не кампус
+        out.pop("campus")
+        out.setdefault("building", letter)
+    building, floor = dates.mentioned_place(user_text)
+    if building:
+        out["building"] = building
+    if floor:
+        out["floor"] = floor
+    if out.get("building") and not _str(out.get("campus")) and "вернадск" in (user_text or "").casefold():
+        out["campus"] = "В-78" if "86" not in user_text else "В-86"
+    return out
+
+
+# \bнедел: не «понедельник»
+_PERIOD_WORDS = re.compile(r"\bнедел|месяц|период|\bдо\b|\bпо\b|\bс\s+\d|ближайш|числ", re.I)
+
+
+def drop_invented_period(name: str, args: dict, user_dates: list[str], user_text: str) -> dict:
+    """Срок поиска, который пользователь не называл, не ограничивает перенос.
+    Скриншот: «перенести 1 и 2 пары в понедельник» — модель сама поставила date_from=date_to=10.11,
+    и вариантов осталось два, оба вечером."""
+    if name != "find_reschedule_slots" or not (_str(args.get("date_from")) or _str(args.get("date_to"))):
+        return args
+    given = {_date(args.get("date_from")), _date(args.get("date_to"))} - {None}
+    if given & set(user_dates) or _PERIOD_WORDS.search(user_text or ""):
+        return args
+    logger.info("invented search period dropped: %s - %s", args.get("date_from"), args.get("date_to"))
+    return {k: v for k, v in args.items() if k not in ("date_from", "date_to")}
 
 
 # --- системный промпт ---
@@ -425,7 +494,11 @@ def system_prompt(me: str | None = None, now: datetime | None = None) -> str:
 - Если инструмент вернул ОШИБКУ со списком вариантов — покажи варианты и спроси, кого/что имели в виду.
 - Если не хватает данных (кто, какая группа, когда) — задай один уточняющий вопрос.
 - Для переноса пары и поиска времени для отработки используй find_reschedule_slots. Напомни, что перенос согласуется с учебным отделом.
-- Корпус передавай, только если пользователь его назвал.
+- Корпус передавай, только если пользователь его назвал. Кампус — В-78 и т. п.; буква корпуса («корпус Б») — building, этаж — floor.
+- Период поиска (date_from/date_to) передавай, только если пользователь сам назвал срок.
+- Числа в результатах — количество аудиторий, а не мест.
+- Если результат говорит, что условие пользователя (корпус, этаж, день) не выполнено, скажи об этом прямо и предложи, как ослабить условие.
+- Строка «[Параметры поиска: …]» в твоих прошлых ответах — с чем ты искал. На уточнение («а в среду?», «а в корпусе А?») повтори тот же поиск, изменив только названное. Сам эту строку не пиши.
 - Группы, предметы и аудитории называй только из результатов инструментов, полностью («РИБО-02-23»).
 - Свободная по расписанию аудитория может быть физически закрыта — упомяни это, если предлагаешь аудиторию.
 - {who}
@@ -465,6 +538,23 @@ class Answer:
     text: str
     steps: list[Step] = field(default_factory=list)
 
+    @property
+    def context(self) -> str:
+        """Параметры последних успешных поисков — страница добавит их к этому ответу в истории,
+        чтобы уточняющий вопрос («а в среду?») продолжил тот же поиск."""
+        done = [s for s in self.steps if s.ok and not s.result.startswith("Этот запрос уже выполнен")][-2:]
+        if not done:
+            return ""
+        calls = "; ".join(f"{s.tool} {json.dumps(s.args, ensure_ascii=False, sort_keys=True)}" for s in done)
+        return f"[Параметры поиска: {calls}]"[:800]
+
+
+_CONTEXT_LINE = re.compile(r"^\s*\[Параметры поиска:.*$", re.M)
+
+
+def _clean(text: str) -> str:
+    return _CONTEXT_LINE.sub("", text or "").strip()
+
 
 ToolRunner = Callable[[str, dict], Awaitable[str]]
 
@@ -485,7 +575,7 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
     for _ in range(MAX_ROUNDS):
         reply = await llm.chat(messages, TOOLS, think=think)
         if not reply.tool_calls:
-            return Answer(reply.content or "Не получилось сформулировать ответ. Переформулируйте вопрос.", steps)
+            return Answer(_clean(reply.content) or "Не получилось сформулировать ответ. Переформулируйте вопрос.", steps)
         messages.append({"role": "assistant", "content": reply.content,
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in reply.tool_calls]})
         for call in reply.tool_calls:
@@ -513,4 +603,4 @@ async def answer(llm: Ollama, history: list[dict], me: str | None = None, tool_r
     # лимит раундов: просим ответить по уже полученным данным
     messages.append({"role": "user", "content": "Ответь на исходный вопрос по уже полученным данным, без новых запросов."})
     final = await llm.chat(messages, think=think)
-    return Answer(final.content or "Не получилось получить ответ. Уточните вопрос.", steps)
+    return Answer(_clean(final.content) or "Не получилось получить ответ. Уточните вопрос.", steps)

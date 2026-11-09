@@ -152,3 +152,25 @@ def mentioned_pairs(text: str) -> list[int]:
     for m in _PAIR_WORD_RE.finditer(low):
         found.append(_PAIR_WORDS[m.group(1)])
     return [n for n in dict.fromkeys(found) if 1 <= n <= 7]
+
+
+_FLOOR_WORDS = {"перв": 1, "втор": 2, "трет": 3, "четверт": 4, "пят": 5, "шест": 6, "седьм": 7, "восьм": 8, "девят": 9}
+# «корпус Б», «в корпусе Б», «в Б корпусе»; не «корпус В-78» (это код кампуса), не «в корпусе на …»
+# и не предлог «в» из «в корпусе».
+_BUILDING_RE = re.compile(r"\bкорпус\w*\s+«?([а-я])»?(?![\w-])(?!\s*\d)|\b(?:в|во|на|из)\s+([а-я])\s+корпус")
+_FLOOR_NUM_RE = re.compile(r"(?<![\d.:])([1-9])\s*-?\s*(?:м|й|ом|ем)?\s+этаж|(?<![\d.:])([1-9])-?(?:м|й|ом|ем)\s*этаж")
+_FLOOR_WORD_RE = re.compile(r"\b(перв|втор|трет|четверт|пят|шест|седьм|восьм|девят)\w*\s+этаж")
+
+
+def mentioned_place(text: str) -> tuple[str | None, int | None]:
+    """Корпус-буква и этаж из вопроса: «аудитория в корпусе Б на втором этаже» → («Б», 2)."""
+    low = (text or "").casefold().replace("ё", "е")[:4000]
+    building = None
+    if m := _BUILDING_RE.search(low):
+        building = (m.group(1) or m.group(2)).upper()
+    floor = None
+    if m := _FLOOR_NUM_RE.search(low):
+        floor = int(m.group(1) or m.group(2))
+    elif m := _FLOOR_WORD_RE.search(low):
+        floor = _FLOOR_WORDS[m.group(1)]
+    return building, floor

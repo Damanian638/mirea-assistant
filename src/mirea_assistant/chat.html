@@ -168,7 +168,9 @@ async function ask(text) {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.content})), me: $("me").value.trim(), think: $("think").checked}),
+      // context — параметры прошлого поиска: уточнение «а в среду?» продолжает тот же поиск
+      body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.context ? m.content + "\n\n" + m.context : m.content})),
+                            me: $("me").value.trim(), think: $("think").checked}),
     });
     const data = await r.json();
     wait.remove();
@@ -178,7 +180,7 @@ async function ask(text) {
       store.set("history", history);
       return;
     }
-    history.push({role: "assistant", content: data.answer, steps: data.steps});
+    history.push({role: "assistant", content: data.answer, steps: data.steps, context: data.context || ""});
     store.set("history", history.slice(-40));
     render();
   } catch (e) {

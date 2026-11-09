@@ -46,7 +46,8 @@ def test_chat_passes_history_and_me(app, monkeypatch):
     r = app.post("/api/chat", json={"messages": [{"role": "user", "content": "вопрос"}], "me": " Иванов И. И. ", "think": True})
     assert r.status_code == 200
     assert r.json() == {"answer": "Ответ", "steps": [{"tool": "search", "args": {"query": "ЭФБО"}, "ok": True,
-                                                      "result": "Найдено: ЭФБО-01-24"}]}
+                                                      "result": "Найдено: ЭФБО-01-24"}],
+                        "context": '[Параметры поиска: search {"query": "ЭФБО"}]'}
     assert seen["me"] == "Иванов И. И." and seen["think"] is True
 
 

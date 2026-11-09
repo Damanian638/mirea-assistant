@@ -255,3 +255,24 @@ async def test_fallback_events_get_moscow_time(monkeypatch):
     x = tt.lessons[0]
     assert x.start.tzinfo is not None and x.end.tzinfo is not None
     assert slots.conflicts(slots.busy_of(tt.lessons, "g"), datetime(2030, 1, 8).date(), [1])
+
+
+async def test_building_and_floor_filter_rooms(world):
+    world["rooms"] = lambda day, start, end: [{"room": r, "campus": "В-78"} for r in ("А-201", "Б-305", "Б-210", "Б-202")]
+    res = await slots.find_slots("Коняшкин", lesson_date="2030-01-07", lesson_pairs=[1, 2], building="Б", floor=2)
+    assert res["building"] == "Б" and res["floor"] == 2
+    s0 = res["slots"][0]
+    assert s0["free_rooms"] == ["Б-202", "Б-210"] and s0["free_rooms_total"] == 2  # та же Б-202 — первой
+
+
+async def test_unmet_building_condition_is_reported(world):
+    with pytest.raises(S.ServiceError, match="В-78, корпус Г, 2-й этаж.*ослабить"):
+        await slots.find_slots("Коняшкин", lesson_date="2030-01-07", lesson_pairs=[1, 2], building="Г", floor=2)
+
+
+@pytest.mark.parametrize(
+    "room, place",
+    [("Б-202", ("б", 2)), ("А-128-а", ("а", 1)), ("А-16", ("а", None)), ("ИВЦ-101", ("ивц", 1)), ("10", (None, None))],
+)
+def test_room_place(room, place):
+    assert slots.room_place(room) == place

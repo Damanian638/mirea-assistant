@@ -164,3 +164,18 @@ def test_december_named_in_january_is_previous_year():
     assert dates.resolve("28 декабря", jan) == "2026-12-28"
     assert dates.resolve("28.12", jan) == "2026-12-28"
     assert dates.resolve("15 января", jan) == "2027-01-15"
+
+
+@pytest.mark.parametrize(
+    "text, place",
+    [
+        ("Вернадского 78, аудитория должна быть в корпусе Б на втором этаже", ("Б", 2)),  # скриншот
+        ("в Б корпусе на 3 этаже", ("Б", 3)),
+        ("корпус «А», 4-й этаж", ("А", 4)),
+        ("в корпусе на 2-м этаже", (None, 2)),  # «в» из «в корпусе» — не корпус В
+        ("корпус В-78", (None, None)),  # код кампуса, а не буква корпуса
+        ("перенести 1 и 2 пару во вторник", (None, None)),
+    ],
+)
+def test_mentioned_place(text, place):
+    assert dates.mentioned_place(text) == place
