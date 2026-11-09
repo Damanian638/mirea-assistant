@@ -260,7 +260,7 @@ async def test_ollama_status():
     ])
     llm = Ollama("qwen3:4b", host="http://127.0.0.1:11434")
     assert (await llm.status())["model_ready"] is True
-    assert (await llm.status()) == {"ollama": True, "model": "qwen3:4b", "model_ready": False}
+    assert (await llm.status()) == {"provider": "ollama", "ollama": True, "model": "qwen3:4b", "model_ready": False}
     assert (await llm.status())["ollama"] is False
 
 

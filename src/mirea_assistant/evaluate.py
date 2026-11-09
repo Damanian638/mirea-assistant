@@ -5,6 +5,8 @@
 из слов пользователя). Сеть МИРЭА не используется — вызов перехватывается.
 
     python -m mirea_assistant.evaluate evals/cases.json --model qwen3:8b [--think] [--report report.md]
+    python -m mirea_assistant.evaluate --api --model google/gemini-2.5-flash   # модель через API (ключ из настроек
+                                                                               # или MIREA_ASSISTANT_API_KEY)
 
 С --live вопросы проходят целиком на настоящем расписании МИРЭА и текущей дате: проверяется не вызов,
 а ответ — нет ли в нём аудиторий, групп и дат, которых не было в результатах инструментов (прогон 09.11:
@@ -207,11 +209,21 @@ async def main_async(args) -> int:
     if not args.live:
         agent.clock = lambda: today  # «понедельник» на экзамене всегда 9 ноября
     cases = [c for c in spec["cases"] if not args.only or c["id"] in args.only.split(",")]
-    llm = Ollama(args.model)
+    if args.api:
+        from .api_llm import ApiModel
+        from .config import Config
+
+        cfg = Config.load()
+        if not cfg.api_key:
+            print("Нет ключа API: mirea-assistant configure --api-key … или MIREA_ASSISTANT_API_KEY", file=sys.stderr)
+            return 2
+        llm = ApiModel(args.model, cfg.api_key, cfg.api_base)
+    else:
+        llm = Ollama(args.model)
     llm.think_default = args.think  # type: ignore[attr-defined]
     st = await llm.status()
     if not st["model_ready"]:
-        print(f"Модель {args.model} недоступна: {st}", file=sys.stderr)
+        print(f"Модель {args.model} недоступна: {st.get('error') or st}", file=sys.stderr)
         return 2
     results = []
     for i, case in enumerate(cases, 1):
@@ -240,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m mirea_assistant.evaluate")
     p.add_argument("cases", nargs="?", default="evals/cases.json")
     p.add_argument("--model", default=os.environ.get("MIREA_ASSISTANT_MODEL", "qwen3:8b"))
+    p.add_argument("--api", action="store_true", help="модель через API (OpenRouter или другой OpenAI-совместимый)")
     p.add_argument("--think", action="store_true", help="режим «Думать тщательнее»")
     p.add_argument("--only", help="id вопросов через запятую")
     p.add_argument("--report", help="записать отчёт в markdown")

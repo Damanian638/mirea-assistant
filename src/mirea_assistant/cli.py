@@ -17,8 +17,9 @@ from logging.handlers import RotatingFileHandler
 import httpx
 
 from . import __version__
+from .backends import make_llm
 from .config import Config, home, model_for_ram
-from .llm import Ollama, ollama_host
+from .llm import ollama_host
 from .web import APP_ID, create_app
 
 logger = logging.getLogger("mirea_assistant")
@@ -128,15 +129,19 @@ def serve(port: int, open_browser: bool) -> int:
             error=True)
         return 1
 
-    threading.Thread(target=ensure_ollama, daemon=True).start()
-    llm = Ollama(cfg.model)
+    def start_ollama() -> None:
+        threading.Thread(target=ensure_ollama, daemon=True).start()
+
+    if cfg.provider != "api":
+        start_ollama()
+    llm = make_llm(cfg)
     server: uvicorn.Server | None = None
 
     def stop() -> None:
         if server is not None:
             server.should_exit = True
 
-    app = create_app(llm, port, on_shutdown=stop)
+    app = create_app(llm, port, on_shutdown=stop, on_local=start_ollama)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None, access_log=False))
 
     if open_browser:
@@ -167,6 +172,10 @@ def main(argv: list[str] | None = None, *, gui: bool = False) -> int:
     c.add_argument("--model")
     c.add_argument("--ram-gb", type=float, help="выбрать модель по объёму памяти")
     c.add_argument("--port", type=int, dest="cfg_port")
+    c.add_argument("--provider", choices=["ollama", "api"], help="где работает модель: на компьютере или через API")
+    c.add_argument("--api-key", help="ключ API (OpenRouter или другой OpenAI-совместимый)")
+    c.add_argument("--api-model", help="модель API, например google/gemini-2.5-flash")
+    c.add_argument("--api-base", help="адрес API (по умолчанию OpenRouter)")
     sub.add_parser("status", help="проверить Ollama и модель")
     sub.add_parser("model", help="вывести имя выбранной модели (для установщика)")
     args = p.parse_args(argv)
@@ -183,17 +192,30 @@ def main(argv: list[str] | None = None, *, gui: bool = False) -> int:
             cfg.model, cfg.auto_model = args.model, False
         if args.cfg_port:
             cfg.port = args.cfg_port
+        if args.provider:
+            cfg.provider = args.provider
+        if args.api_key is not None:
+            cfg.api_key = args.api_key.strip()
+        if args.api_model:
+            cfg.api_model = args.api_model
+        if args.api_base:
+            cfg.api_base = args.api_base
         path = cfg.save()
-        print(f"Модель: {cfg.model}, порт: {cfg.port}. Настройки: {path}")
+        where = (f"через API {cfg.api_base}, модель {cfg.api_model}" + ("" if cfg.api_key else " (ключ не задан!)")
+                 if cfg.provider == "api" else f"на компьютере, модель {cfg.model}")
+        print(f"Модель {where}, порт: {cfg.port}. Настройки: {path}")
         return 0
     if args.cmd == "status":
         import asyncio
 
         cfg = Config.load()
-        llm = Ollama(cfg.model)
+        llm = make_llm(cfg)
         st = asyncio.run(llm.status())
-        print(f"Ollama: {'работает' if st['ollama'] else 'не запущена'}; модель {cfg.model}: "
-              f"{'скачана' if st['model_ready'] else 'не скачана'}")
+        if st.get("provider") == "api":
+            print(f"API {cfg.api_base}, модель {cfg.api_model}: {'доступна' if st['model_ready'] else st.get('error')}")
+        else:
+            print(f"Ollama: {'работает' if st['ollama'] else 'не запущена'}; модель {cfg.model}: "
+                  f"{'скачана' if st['model_ready'] else 'не скачана'}")
         return 0 if st["model_ready"] else 1
 
     _setup_logging(to_file=gui)

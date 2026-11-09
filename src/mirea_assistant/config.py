@@ -7,6 +7,8 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .api_llm import DEFAULT_API_MODEL, OPENROUTER
+
 # qwen3:4b в Ollama — это версия 2507 «с рассуждениями», которые нельзя выключить: на экзамене
 # она не отвечала и за 5 минут. Инструктивная 4b — 25 из 28 за ~17 с, qwen3:8b — 28 из 28 за ~25 с
 # (evals/cases.json, процессор GitHub Actions на 4 ядра).
@@ -25,6 +27,11 @@ class Config:
     # Модель выбрана по памяти: при обновлении её можно сменить на лучшую. Выбранную вручную
     # (`configure --model`) обновление не трогает — раньше каждый повторный запуск установщика её затирал.
     auto_model: bool = True
+    # Где работает модель: "ollama" — на этом компьютере, "api" — через интернет (OpenAI-совместимый API).
+    provider: str = "ollama"
+    api_base: str = OPENROUTER
+    api_key: str = ""
+    api_model: str = DEFAULT_API_MODEL
 
     @classmethod
     def load(cls) -> "Config":
@@ -36,7 +43,12 @@ class Config:
             except ValueError:
                 data = {}
         cfg = cls(model=str(data.get("model") or DEFAULT_MODEL), port=int(data.get("port") or DEFAULT_PORT),
-                  auto_model=data.get("auto_model") is not False)
+                  auto_model=data.get("auto_model") is not False,
+                  provider="api" if data.get("provider") == "api" else "ollama",
+                  api_base=str(data.get("api_base") or OPENROUTER), api_key=str(data.get("api_key") or ""),
+                  api_model=str(data.get("api_model") or DEFAULT_API_MODEL))
+        if os.environ.get("MIREA_ASSISTANT_API_KEY"):
+            cfg.api_key = os.environ["MIREA_ASSISTANT_API_KEY"]
         if os.environ.get("MIREA_ASSISTANT_MODEL"):
             cfg.model = os.environ["MIREA_ASSISTANT_MODEL"]
         return cfg

@@ -61,10 +61,10 @@ class Ollama:
             r = await self._client.get("/api/tags", timeout=5.0)
             r.raise_for_status()
         except httpx.HTTPError:
-            return {"ollama": False, "model": self.model, "model_ready": False}
+            return {"provider": "ollama", "ollama": False, "model": self.model, "model_ready": False}
         names = {m.get("name") for m in r.json().get("models", [])} | {m.get("model") for m in r.json().get("models", [])}
         wanted = {self.model, self.model if ":" in self.model else self.model + ":latest"}
-        return {"ollama": True, "model": self.model, "model_ready": bool(names & wanted)}
+        return {"provider": "ollama", "ollama": True, "model": self.model, "model_ready": bool(names & wanted)}
 
     async def _post(self, body: dict) -> httpx.Response:
         try:

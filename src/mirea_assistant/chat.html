@@ -23,6 +23,15 @@ details.settings[open] .panel{position:absolute;right:20px;margin-top:8px;backgr
 .panel p{color:var(--muted);margin:8px 0 0;font-size:13px}
 .panel label.check{display:flex;gap:8px;align-items:center;margin-top:14px}
 .panel label.check input{width:auto}
+details.settings[open] .panel{width:340px;max-height:80vh;overflow-y:auto}
+.panel fieldset.where{border:1px solid var(--line);border-radius:8px;margin:14px 0 0;padding:8px 10px 10px}
+.panel legend{color:var(--muted);font-size:13px;padding:0 4px}
+.panel select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit;margin-bottom:6px}
+.panel #api-box label{margin-top:10px}
+.panel details.adv{margin-top:8px;font-size:13px}
+.panel details.adv summary{cursor:pointer;color:var(--muted)}
+.panel button.save{margin-top:10px;padding:7px 14px;border:0;border-radius:8px;background:var(--accent);color:var(--accent-fg);font:inherit;cursor:pointer}
+.panel #ai-msg.err{color:var(--err)}
 main{flex:1;overflow-y:auto;padding:20px}
 .wrap{max-width:780px;margin:0 auto}
 .banner{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:15px}
@@ -62,6 +71,24 @@ button.send:disabled{opacity:.5;cursor:default}
       <p>Нужно для вопросов «какие у меня пары». Хранится только в этом браузере.</p>
       <label class="check"><input type="checkbox" id="think"> Думать тщательнее</label>
       <p>Точнее понимает сложные вопросы (перенос пар), но отвечает в 2–5 раз дольше.</p>
+      <fieldset class="where">
+        <legend>Где работает ИИ</legend>
+        <label class="check"><input type="radio" name="provider" value="ollama" id="p-local"> На этом компьютере — бесплатно, данные не уходят в интернет</label>
+        <label class="check"><input type="radio" name="provider" value="api" id="p-api"> Через интернет (API) — быстрее и точнее, платно</label>
+        <div id="api-box" hidden>
+          <label for="api-key">Ключ API (OpenRouter)</label>
+          <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…">
+          <label for="api-model">Модель</label>
+          <select id="api-model"></select>
+          <details class="adv"><summary>Другой провайдер</summary>
+            <label for="api-base">Адрес OpenAI-совместимого API</label>
+            <input id="api-base" spellcheck="false" placeholder="https://openrouter.ai/api/v1">
+          </details>
+          <p>Вопросы, ваше ФИО и найденное расписание будут отправляться провайдеру API. У OpenRouter запросы идут только к провайдерам, которые не хранят данные. Ключ хранится в файле настроек на этом компьютере.</p>
+        </div>
+        <button type="button" class="save" id="save-ai">Сохранить</button>
+        <p id="ai-msg" role="status"></p>
+      </fieldset>
     </div>
   </details>
 </header>
@@ -69,7 +96,7 @@ button.send:disabled{opacity:.5;cursor:default}
   <div id="banner" class="banner" hidden></div>
   <div class="hello" id="hello">
     <h2>Что можно спросить</h2>
-    <p>Помощник работает на этом компьютере и берёт расписание с сайта МИРЭА. Вход в аккаунт не нужен.</p>
+    <p>Помощник берёт расписание с сайта МИРЭА, вход в аккаунт не нужен. ИИ работает на этом компьютере или через интернет — выбор в ⚙ Настройках.</p>
     <div class="chips">
       <button class="chip">Какие у меня пары на следующей неделе?</button>
       <button class="chip">Куда перенести мои 1 и 2 пары в понедельник, чтобы было удобно и без пересечений?</button>
@@ -140,7 +167,16 @@ async function refreshStatus() {
     const r = await fetch("/api/status");
     const s = await r.json();
     const pill = $("status"), banner = $("banner");
-    if (!s.ollama) {
+    if (s.provider === "api") {
+      if (s.model_ready) {
+        pill.textContent = "готов · API · " + s.model; pill.className = "pill ok";
+        banner.hidden = true;
+      } else {
+        pill.textContent = "API недоступен"; pill.className = "pill bad";
+        banner.textContent = (s.error || "Провайдер API недоступен.") + " Настройки — ⚙ вверху справа.";
+        banner.hidden = false;
+      }
+    } else if (!s.ollama) {
       pill.textContent = "ИИ не запущен"; pill.className = "pill bad";
       banner.textContent = "Не запущена программа Ollama, в которой работает ИИ. Откройте Ollama из меню «Пуск» и подождите минуту.";
       banner.hidden = false;
@@ -210,6 +246,67 @@ $("off").addEventListener("click", async () => {
   try { await fetch("/api/shutdown", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); } catch (e) {}
   document.body.innerHTML = "<main><div class='wrap'><div class='hello'><h2>Помощник выключен</h2><p>Чтобы снова открыть, используйте ярлык «Помощник МИРЭА» на рабочем столе.</p></div></div></main>";
 });
+// --- где работает ИИ: на компьютере или через API ---
+function aiMsg(text, bad) { const m = $("ai-msg"); m.textContent = text || ""; m.className = bad ? "err" : ""; }
+function price(m) {
+  if (!m.price_per_million) return "";
+  const [i, o] = m.price_per_million;
+  return " — $" + i.toFixed(2) + " / $" + o.toFixed(2) + " за 1 млн токенов";
+}
+function fillModels(list, current) {
+  const sel = $("api-model");
+  sel.textContent = "";
+  const ids = new Set(list.map((m) => m.id));
+  if (current && !ids.has(current)) list = [{id: current, name: current, recommended: false}, ...list];
+  for (const m of list) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = (m.recommended ? "★ " : "") + m.id + price(m);
+    sel.appendChild(o);
+  }
+  sel.value = current || (list[0] && list[0].id) || "";
+}
+async function loadModels(current) {
+  try {
+    const r = await fetch("/api/models");
+    const d = await r.json();
+    if (!r.ok) { fillModels([], current); aiMsg(d.error || "Список моделей недоступен.", true); return; }
+    fillModels(d.models, current);
+  } catch (e) { fillModels([], current); }
+}
+function showApi() { $("api-box").hidden = !$("p-api").checked; }
+async function loadSettings() {
+  try {
+    const s = await (await fetch("/api/settings")).json();
+    $(s.provider === "api" ? "p-api" : "p-local").checked = true;
+    $("api-base").value = s.api_base || "";
+    $("api-key").value = "";
+    $("api-key").placeholder = s.api_key_set ? "ключ сохранён " + s.api_key_hint + " (оставьте пустым)" : "sk-or-…";
+    fillModels([], s.api_model);
+    showApi();
+    if (s.provider === "api" && s.api_key_set) loadModels(s.api_model);
+  } catch (e) {}
+}
+document.querySelectorAll("input[name=provider]").forEach((r) => r.addEventListener("change", showApi));
+$("save-ai").addEventListener("click", async () => {
+  const provider = $("p-api").checked ? "api" : "ollama";
+  aiMsg("Сохраняю…");
+  try {
+    const r = await fetch("/api/settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({provider, api_key: $("api-key").value.trim(), api_model: $("api-model").value,
+                            api_base: $("api-base").value.trim()}),
+    });
+    const d = await r.json();
+    if (!r.ok) { aiMsg(d.error || "Не удалось сохранить.", true); return; }
+    $("api-key").value = "";
+    aiMsg(provider === "api" ? "Сохранено. Ответы теперь даёт модель " + d.api_model + " через API." : "Сохранено. ИИ работает на этом компьютере.");
+    await loadSettings();
+    refreshStatus();
+  } catch (e) { aiMsg("Помощник не отвечает.", true); }
+});
+loadSettings();
+
 render();
 refreshStatus();
 setInterval(refreshStatus, 15000);
